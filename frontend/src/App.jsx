@@ -29,7 +29,7 @@ const DEFAULT_CONFIG = {
         model: { provider: 'openai', model_name: 'gpt-4o-mini', temperature: 0.3, max_tokens: null },
       },
       context_mode: 'scoped',
-      input_mapping: { topic: '$.input.topic' },
+      input_mapping: { topic: '$.input.message' },
       output_mapping: {},
       error_policy: null,
     },
@@ -61,6 +61,61 @@ const DEFAULT_CONFIG = {
   compaction: null,
   streaming: { chunk_size_chars: 200, provenance_enabled: false },
   input: { topic: 'The future of AI agent orchestration frameworks' },
+}
+
+// ── Pipeline summary (shown in left column when Chat tab is active) ────────────
+function PipelineSummary({ config }) {
+  const nodes   = config.nodes   || []
+  const presets = config.presets || []
+  return (
+    <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+      <p className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Active Pipeline</p>
+
+      {nodes.length === 0 && presets.length === 0 && (
+        <p className="text-xs text-slate-600">No nodes or presets configured.</p>
+      )}
+
+      {nodes.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {nodes.map((n, i) => (
+            <div key={n.node_id} className="flex items-center gap-2">
+              {i > 0 && <div className="w-px h-3 bg-slate-700 ml-2.5 -mt-3 absolute" />}
+              <div className="flex items-center gap-2 w-full">
+                <div className="w-5 h-5 rounded bg-indigo-600/20 border border-indigo-600/30 flex items-center justify-center shrink-0">
+                  <Cpu size={10} className="text-indigo-400" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-medium text-slate-300 truncate">{n.agent.name || n.node_id}</p>
+                  <p className="text-xs text-slate-600 truncate">{n.agent.model.provider}/{n.agent.model.model_name}</p>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {presets.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          {presets.map((p, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <div className="w-5 h-5 rounded bg-violet-600/20 border border-violet-600/30 flex items-center justify-center shrink-0">
+                <Layers size={10} className="text-violet-400" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-300 truncate">{p.preset_id}</p>
+                <p className="text-xs text-slate-600">{p.pattern}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-2 p-2.5 rounded bg-slate-800/60 border border-slate-700 text-xs text-slate-600 leading-relaxed">
+        Agents receive <code className="text-indigo-400">$.input.message</code> and{' '}
+        <code className="text-indigo-400">$.input.conversation_history</code> on each turn.
+      </div>
+    </div>
+  )
 }
 
 export default function App() {
@@ -207,7 +262,7 @@ export default function App() {
           )}
           <button
             onClick={isRunning ? handleStop : handleRun}
-            disabled={!config.nodes.length && !config.presets?.length}
+            disabled={leftTab === 'chat' || (!config.nodes.length && !config.presets?.length)}
             className={`flex items-center gap-2 px-4 py-1.5 rounded text-sm font-semibold transition-all
               ${isRunning
                 ? 'bg-red-500/20 text-red-400 border border-red-500/40 hover:bg-red-500/30'
@@ -222,20 +277,10 @@ export default function App() {
       {/* ── Main layout ── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* ── Full-width Chat panel (replaces split layout) ── */}
-        {leftTab === 'chat' && (
-          <ChatPanel
-            config={config}
-            apiKey={apiKey}
-            apiKeyType={apiKeyType}
-            azureEndpoint={azureEndpoint}
-            azureApiVersion={azureApiVersion}
-            backendUrl={backendUrl}
-          />
-        )}
+        {/* ── Left column — ALWAYS rendered so tabs are never hidden ── */}
+        <div className="flex flex-col w-[440px] min-w-[340px] border-r border-slate-700 bg-slate-900 shrink-0">
 
-        {/* ── Left panel (hidden when Chat is active) ── */}
-        {leftTab !== 'chat' && <div className="flex flex-col w-[440px] min-w-[340px] border-r border-slate-700 bg-slate-900 shrink-0">
+          {/* Tab bar — always visible */}
           <div className="flex overflow-x-auto border-b border-slate-700 bg-slate-800 shrink-0 scrollbar-none">
             {leftTabs.map(({ id, label, Icon }) => (
               <button
@@ -252,94 +297,111 @@ export default function App() {
               </button>
             ))}
           </div>
-          <div className="flex-1 overflow-y-auto p-4">
-            {leftTab === 'nodes' && (
-              <NodeBuilder
-                nodes={config.nodes}
-                setNodes={(u) => setConfig(c => ({ ...c, nodes: typeof u === 'function' ? u(c.nodes) : u }))}
-              />
-            )}
-            {leftTab === 'edges' && (
-              <EdgeBuilder
-                edges={config.edges}
-                setEdges={(u) => setConfig(c => ({ ...c, edges: typeof u === 'function' ? u(c.edges) : u }))}
-                nodeIds={nodeIds}
-              />
-            )}
-            {leftTab === 'presets' && (
-              <PresetBuilder
-                presets={config.presets || []}
-                setPresets={(u) => setConfig(c => ({ ...c, presets: typeof u === 'function' ? u(c.presets || []) : u }))}
-              />
-            )}
-            {leftTab === 'input' && (
-              <InputPanel
-                input={config.input}
-                setInput={(input) => setConfig(c => ({ ...c, input }))}
-                orchestrationId={config.orchestration_id}
-                setOrchestrationId={(id) => setConfig(c => ({ ...c, orchestration_id: id }))}
-                compaction={config.compaction}
-                setCompaction={(compaction) => setConfig(c => ({ ...c, compaction }))}
-                errorPolicy={config.error_policy}
-                setErrorPolicy={(error_policy) => setConfig(c => ({ ...c, error_policy }))}
-                streaming={config.streaming}
-                setStreaming={(streaming) => setConfig(c => ({ ...c, streaming }))}
-              />
-            )}
-            {leftTab === 'settings' && (
-              <SettingsPanel
-                apiKey={apiKey}             setApiKey={setApiKey}
-                apiKeyType={apiKeyType}     setApiKeyType={setApiKeyType}
-                azureEndpoint={azureEndpoint}   setAzureEndpoint={setAzureEndpoint}
-                azureApiVersion={azureApiVersion} setAzureApiVersion={setAzureApiVersion}
-                backendUrl={backendUrl}     setBackendUrl={setBackendUrl}
-              />
-            )}
-          </div>
-        </div>}
 
-        {/* ── Right panel (hidden when Chat is active) ── */}
-        {leftTab !== 'chat' && <div className="flex flex-col flex-1 min-w-0 bg-slate-900">
-          <div className="flex border-b border-slate-700 bg-slate-800 shrink-0">
-            {[
-              { id: 'events',  label: 'Execution Events', Icon: Activity },
-              { id: 'payload', label: 'JSON Payload',     Icon: Code },
-            ].map(({ id, label, Icon }) => (
-              <button
-                key={id}
-                onClick={() => setRightTab(id)}
-                className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium transition-colors border-b-2
-                  ${rightTab === id
-                    ? 'border-indigo-500 text-indigo-300'
-                    : 'border-transparent text-slate-400 hover:text-slate-200'
-                  }`}
-              >
-                <Icon size={13} />
-                {label}
-              </button>
-            ))}
-            <div className="ml-auto flex items-center pr-4 gap-2">
-              <div className={`w-2 h-2 rounded-full transition-colors
-                ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-slate-600'}`}
-              />
-              <span className="text-xs text-slate-500">
-                {isRunning ? 'running' : 'idle'}
-              </span>
+          {/* Content — pipeline summary when Chat, editor panels otherwise */}
+          {leftTab === 'chat' ? (
+            <PipelineSummary config={config} />
+          ) : (
+            <div className="flex-1 overflow-y-auto p-4">
+              {leftTab === 'nodes' && (
+                <NodeBuilder
+                  nodes={config.nodes}
+                  setNodes={(u) => setConfig(c => ({ ...c, nodes: typeof u === 'function' ? u(c.nodes) : u }))}
+                />
+              )}
+              {leftTab === 'edges' && (
+                <EdgeBuilder
+                  edges={config.edges}
+                  setEdges={(u) => setConfig(c => ({ ...c, edges: typeof u === 'function' ? u(c.edges) : u }))}
+                  nodeIds={nodeIds}
+                />
+              )}
+              {leftTab === 'presets' && (
+                <PresetBuilder
+                  presets={config.presets || []}
+                  setPresets={(u) => setConfig(c => ({ ...c, presets: typeof u === 'function' ? u(c.presets || []) : u }))}
+                />
+              )}
+              {leftTab === 'input' && (
+                <InputPanel
+                  input={config.input}
+                  setInput={(input) => setConfig(c => ({ ...c, input }))}
+                  orchestrationId={config.orchestration_id}
+                  setOrchestrationId={(id) => setConfig(c => ({ ...c, orchestration_id: id }))}
+                  compaction={config.compaction}
+                  setCompaction={(compaction) => setConfig(c => ({ ...c, compaction }))}
+                  errorPolicy={config.error_policy}
+                  setErrorPolicy={(error_policy) => setConfig(c => ({ ...c, error_policy }))}
+                  streaming={config.streaming}
+                  setStreaming={(streaming) => setConfig(c => ({ ...c, streaming }))}
+                />
+              )}
+              {leftTab === 'settings' && (
+                <SettingsPanel
+                  apiKey={apiKey}             setApiKey={setApiKey}
+                  apiKeyType={apiKeyType}     setApiKeyType={setApiKeyType}
+                  azureEndpoint={azureEndpoint}   setAzureEndpoint={setAzureEndpoint}
+                  azureApiVersion={azureApiVersion} setAzureApiVersion={setAzureApiVersion}
+                  backendUrl={backendUrl}     setBackendUrl={setBackendUrl}
+                />
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Right area ── */}
+        {leftTab === 'chat' ? (
+          <ChatPanel
+            config={config}
+            apiKey={apiKey}
+            apiKeyType={apiKeyType}
+            azureEndpoint={azureEndpoint}
+            azureApiVersion={azureApiVersion}
+            backendUrl={backendUrl}
+          />
+        ) : (
+          <div className="flex flex-col flex-1 min-w-0 bg-slate-900">
+            <div className="flex border-b border-slate-700 bg-slate-800 shrink-0">
+              {[
+                { id: 'events',  label: 'Execution Events', Icon: Activity },
+                { id: 'payload', label: 'JSON Payload',     Icon: Code },
+              ].map(({ id, label, Icon }) => (
+                <button
+                  key={id}
+                  onClick={() => setRightTab(id)}
+                  className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium transition-colors border-b-2
+                    ${rightTab === id
+                      ? 'border-indigo-500 text-indigo-300'
+                      : 'border-transparent text-slate-400 hover:text-slate-200'
+                    }`}
+                >
+                  <Icon size={13} />
+                  {label}
+                </button>
+              ))}
+              <div className="ml-auto flex items-center pr-4 gap-2">
+                <div className={`w-2 h-2 rounded-full transition-colors
+                  ${isRunning ? 'bg-green-400 animate-pulse' : 'bg-slate-600'}`}
+                />
+                <span className="text-xs text-slate-500">
+                  {isRunning ? 'running' : 'idle'}
+                </span>
+              </div>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              {rightTab === 'events' && (
+                <EventViewer
+                  events={events}
+                  isRunning={isRunning}
+                  onClear={() => setEvents([])}
+                />
+              )}
+              {rightTab === 'payload' && (
+                <PayloadPreview payload={payload} />
+              )}
             </div>
           </div>
-          <div className="flex-1 overflow-hidden">
-            {rightTab === 'events' && (
-              <EventViewer
-                events={events}
-                isRunning={isRunning}
-                onClear={() => setEvents([])}
-              />
-            )}
-            {rightTab === 'payload' && (
-              <PayloadPreview payload={payload} />
-            )}
-          </div>
-        </div>}
+        )}
       </div>
     </div>
   )
