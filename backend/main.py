@@ -1,22 +1,18 @@
 import asyncio
 import json
-import os
 import uuid
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from models import JobResponse, OrchestrationPayload
+from models import JobResponse, OrchestrationConfig
 from orchestrator import run_orchestration
 
 load_dotenv()
 
-# ── In-memory job store ────────────────────────────────────────────────────────
-# Maps job_id → asyncio.Queue[dict]
 _JOBS: dict[str, asyncio.Queue] = {}
 
 
@@ -28,11 +24,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Agent Orchestration API",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# ── CORS ───────────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,52 +36,48 @@ app.add_middleware(
 )
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
-
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "active_jobs": len(_JOBS)}
 
 
 @app.post("/api/orchestrate", response_model=JobResponse)
-async def orchestrate(payload: OrchestrationPayload):
-    """
-    Accept an orchestration payload, spin up a background task,
-    and return a job_id the client can use to subscribe to the SSE log stream.
-    """
-    if not payload.agents:
-        raise HTTPException(status_code=422, detail="At least one agent is required")
-    if not payload.tasks:
-        raise HTTPException(status_code=422, detail="At least one task is required")
+async def orchestrate(config: OrchestrationConfig):
+    if not config.nodes and not config.presets:
+        raise HTTPException(
+            status_code=422,
+            detail="Config must include at least one node or preset.",
+        )
 
     job_id = str(uuid.uuid4())
-    log_queue: asyncio.Queue = asyncio.Queue()
-    _JOBS[job_id] = log_queue
+    queue: asyncio.Queue = asyncio.Queue()
+    _JOBS[job_id] = queue
 
-    # Fire-and-forget background task
-    asyncio.create_task(run_orchestration(payload, log_queue))
+    asyncio.create_task(run_orchestration(config, queue))
 
     return JobResponse(job_id=job_id, status="queued")
 
 
 @app.get("/api/stream/{job_id}")
 async def stream_logs(job_id: str):
-    """
-    Server-Sent Events endpoint.  The client opens this after receiving job_id
-    from POST /api/orchestrate.  Streams until a {'type': 'done'} event is sent.
-    """
     if job_id not in _JOBS:
         raise HTTPException(status_code=404, detail="Job not found")
 
     queue = _JOBS[job_id]
 
-    async def event_generator() -> AsyncGenerator[str, None]:
+    async def event_generator():
         try:
             while True:
                 try:
-                    item = await asyncio.wait_for(queue.get(), timeout=120.0)
+                    item = await asyncio.wait_for(queue.get(), timeout=300.0)
                 except asyncio.TimeoutError:
-                    yield "data: " + json.dumps({"type": "error", "message": "Timeout waiting for log"}) + "\n\n"
+                    yield "data: " + json.dumps({
+                        "type": "event",
+                        "data": {
+                            "event_type": "error",
+                            "payload": {"message": "Stream timeout", "error_type": "timeout", "policy_applied": "fail"},
+                        },
+                    }) + "\n\n"
                     break
 
                 yield "data: " + json.dumps(item) + "\n\n"
@@ -101,6 +92,6 @@ async def stream_logs(job_id: str):
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # Disable nginx buffering
+            "X-Accel-Buffering": "no",
         },
     )
