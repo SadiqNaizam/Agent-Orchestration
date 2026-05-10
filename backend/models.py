@@ -146,3 +146,40 @@ class OrchestrationConfig(BaseModel):
 class JobResponse(BaseModel):
     job_id: str
     status: str = "queued"
+
+
+# ── Chat ───────────────────────────────────────────────────────────────────────
+
+class ChatCreateRequest(BaseModel):
+    agent: AgentDefinition
+    compaction: Optional[CompactionConfig] = None
+    api_key: Optional[str] = None
+    api_key_type: str = "openai"
+    azure_endpoint: Optional[str] = None
+    azure_api_version: str = "2024-02-01"
+
+
+class ChatSession(BaseModel):
+    session_id: str
+    agent: AgentDefinition
+    messages: List[Dict[str, Any]] = []   # [{role: "user"|"assistant"|"system", content}]
+    total_tokens: int = 0
+    created_at: str
+    compaction: Optional[CompactionConfig] = None
+    api_key: Optional[str] = None
+    api_key_type: str = "openai"
+    azure_endpoint: Optional[str] = None
+    azure_api_version: str = "2024-02-01"
+
+
+class ChatMessageRequest(BaseModel):
+    content: str
+
+
+class ChatSessionInfo(BaseModel):
+    session_id: str
+    agent_id: str
+    agent_name: Optional[str] = None
+    created_at: str
+    message_count: int
+    total_tokens: int
