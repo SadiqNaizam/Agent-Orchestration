@@ -46,6 +46,7 @@ class StreamingEmitter:
         payload: dict,
         node_id: Optional[str] = None,
         node_type: Optional[str] = None,
+        provenance: Optional[dict] = None,
     ) -> None:
         await self._queue.put({
             "type": "event",
@@ -57,7 +58,7 @@ class StreamingEmitter:
                 "node_id": node_id,
                 "node_type": node_type,
                 "payload": payload,
-                "provenance": None,
+                "provenance": provenance,
             },
         })
 
@@ -74,13 +75,19 @@ class StreamingEmitter:
         )
 
     async def chunk(
-        self, node_id: str, content: str, chunk_index: int, is_final: bool = False
+        self,
+        node_id: str,
+        content: str,
+        chunk_index: int,
+        is_final: bool = False,
+        provenance: Optional[dict] = None,
     ) -> None:
         await self._emit(
             "chunk",
             {"content": content, "chunk_index": chunk_index, "is_final_chunk": is_final},
             node_id=node_id,
             node_type="agent",
+            provenance=provenance,
         )
 
     async def node_complete(

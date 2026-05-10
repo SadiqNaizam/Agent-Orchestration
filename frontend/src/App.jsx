@@ -2,10 +2,11 @@ import { useState, useRef, useCallback } from 'react'
 import NodeBuilder from './components/NodeBuilder'
 import EdgeBuilder from './components/EdgeBuilder'
 import InputPanel from './components/InputPanel'
+import PresetBuilder from './components/PresetBuilder'
 import EventViewer from './components/EventViewer'
 import PayloadPreview from './components/PayloadPreview'
 import SettingsPanel from './components/SettingsPanel'
-import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity } from 'lucide-react'
+import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers } from 'lucide-react'
 
 const DEFAULT_BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -178,6 +179,7 @@ export default function App() {
   const leftTabs = [
     { id: 'nodes',    label: 'Nodes',    Icon: Cpu },
     { id: 'edges',    label: 'Edges',    Icon: GitBranch },
+    { id: 'presets',  label: 'Presets',  Icon: Layers },
     { id: 'input',    label: 'Input',    Icon: Database },
     { id: 'settings', label: 'Settings', Icon: Settings },
   ]
@@ -250,12 +252,24 @@ export default function App() {
                 nodeIds={nodeIds}
               />
             )}
+            {leftTab === 'presets' && (
+              <PresetBuilder
+                presets={config.presets || []}
+                setPresets={(presets) => setConfig(c => ({ ...c, presets }))}
+              />
+            )}
             {leftTab === 'input' && (
               <InputPanel
                 input={config.input}
                 setInput={(input) => setConfig(c => ({ ...c, input }))}
                 orchestrationId={config.orchestration_id}
                 setOrchestrationId={(id) => setConfig(c => ({ ...c, orchestration_id: id }))}
+                compaction={config.compaction}
+                setCompaction={(compaction) => setConfig(c => ({ ...c, compaction }))}
+                errorPolicy={config.error_policy}
+                setErrorPolicy={(error_policy) => setConfig(c => ({ ...c, error_policy }))}
+                streaming={config.streaming}
+                setStreaming={(streaming) => setConfig(c => ({ ...c, streaming }))}
               />
             )}
             {leftTab === 'settings' && (
