@@ -236,12 +236,12 @@ export default function App() {
 
         {/* ── Left panel (hidden when Chat is active) ── */}
         {leftTab !== 'chat' && <div className="flex flex-col w-[440px] min-w-[340px] border-r border-slate-700 bg-slate-900 shrink-0">
-          <div className="flex border-b border-slate-700 bg-slate-800 shrink-0">
+          <div className="flex overflow-x-auto border-b border-slate-700 bg-slate-800 shrink-0 scrollbar-none">
             {leftTabs.map(({ id, label, Icon }) => (
               <button
                 key={id}
                 onClick={() => setLeftTab(id)}
-                className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-medium transition-colors border-b-2
+                className={`flex items-center gap-1 px-3 py-2.5 text-xs font-medium transition-colors border-b-2 shrink-0
                   ${leftTab === id
                     ? 'border-indigo-500 text-indigo-300'
                     : 'border-transparent text-slate-400 hover:text-slate-200'
