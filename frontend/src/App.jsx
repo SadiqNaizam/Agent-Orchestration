@@ -17,6 +17,7 @@ const LLM_MODELS = [
   { label: 'Gemini 1.5 Pro', value: 'gemini/gemini-1.5-pro' },
   { label: 'Gemini 1.5 Flash', value: 'gemini/gemini-1.5-flash' },
   { label: 'Ollama Llama3 (local)', value: 'ollama/llama3' },
+  { label: 'Azure OpenAI (custom deployment)', value: 'azure/my-deployment', isAzure: true },
 ]
 
 export { LLM_MODELS }
@@ -50,6 +51,8 @@ export default function App() {
 
   const [apiKey, setApiKey] = useState('')
   const [apiKeyType, setApiKeyType] = useState('openai')
+  const [azureEndpoint, setAzureEndpoint] = useState('')
+  const [azureApiVersion, setAzureApiVersion] = useState('2024-02-01')
   const [backendUrl, setBackendUrl] = useState(DEFAULT_BACKEND)
 
   // ── UI state ────────────────────────────────────────────────────────────────
@@ -61,7 +64,15 @@ export default function App() {
   const esRef = useRef(null)
 
   // ── Derived payload ─────────────────────────────────────────────────────────
-  const payload = { agents, tasks, flow, api_key: apiKey || undefined, api_key_type: apiKeyType }
+  const payload = {
+    agents,
+    tasks,
+    flow,
+    api_key: apiKey || undefined,
+    api_key_type: apiKeyType,
+    ...(apiKeyType === 'azure' && azureEndpoint ? { azure_endpoint: azureEndpoint } : {}),
+    ...(apiKeyType === 'azure' && azureApiVersion ? { azure_api_version: azureApiVersion } : {}),
+  }
 
   // ── Run orchestration ───────────────────────────────────────────────────────
   const handleRun = useCallback(async () => {
@@ -204,6 +215,8 @@ export default function App() {
               <SettingsPanel
                 apiKey={apiKey} setApiKey={setApiKey}
                 apiKeyType={apiKeyType} setApiKeyType={setApiKeyType}
+                azureEndpoint={azureEndpoint} setAzureEndpoint={setAzureEndpoint}
+                azureApiVersion={azureApiVersion} setAzureApiVersion={setAzureApiVersion}
                 backendUrl={backendUrl} setBackendUrl={setBackendUrl}
               />
             )}
