@@ -29,7 +29,9 @@ class OrchestrationPayload(BaseModel):
     tasks: List[TaskConfig]
     flow: FlowConfig
     api_key: Optional[str] = None
-    api_key_type: Optional[str] = "openai"  # "openai" | "anthropic" | "gemini"
+    api_key_type: Optional[str] = "openai"  # "openai" | "anthropic" | "gemini" | "azure"
+    azure_endpoint: Optional[str] = None
+    azure_api_version: Optional[str] = "2024-02-01"
 
 
 class JobResponse(BaseModel):

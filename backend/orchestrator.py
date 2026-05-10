@@ -82,6 +82,13 @@ def _build_and_run(
             litellm.anthropic_key = payload.api_key
         elif payload.api_key_type == "gemini":
             os.environ["GEMINI_API_KEY"] = payload.api_key
+        elif payload.api_key_type == "azure":
+            os.environ["AZURE_API_KEY"] = payload.api_key
+            litellm.api_key = payload.api_key
+            if payload.azure_endpoint:
+                os.environ["AZURE_API_BASE"] = payload.azure_endpoint
+            if payload.azure_api_version:
+                os.environ["AZURE_API_VERSION"] = payload.azure_api_version
         else:
             os.environ["OPENAI_API_KEY"] = payload.api_key
             litellm.openai_key = payload.api_key

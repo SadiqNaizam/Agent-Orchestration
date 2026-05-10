@@ -16,4 +16,10 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: AZURE_API_KEY
+        sync: false
+      - key: AZURE_API_BASE
+        sync: false
+      - key: AZURE_API_VERSION
+        sync: false
       # Python version is pinned via backend/.python-version
