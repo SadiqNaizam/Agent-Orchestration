@@ -32,3 +32,7 @@ input:focus, select:focus, textarea:focus {
 
 /* Smooth log scroll */
 .log-scroll { scroll-behavior: smooth; }
+
+/* Hide scrollbar for tab bars while keeping scroll functional */
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
