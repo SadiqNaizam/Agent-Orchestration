@@ -242,20 +242,20 @@ export default function App() {
             {leftTab === 'nodes' && (
               <NodeBuilder
                 nodes={config.nodes}
-                setNodes={(nodes) => setConfig(c => ({ ...c, nodes }))}
+                setNodes={(u) => setConfig(c => ({ ...c, nodes: typeof u === 'function' ? u(c.nodes) : u }))}
               />
             )}
             {leftTab === 'edges' && (
               <EdgeBuilder
                 edges={config.edges}
-                setEdges={(edges) => setConfig(c => ({ ...c, edges }))}
+                setEdges={(u) => setConfig(c => ({ ...c, edges: typeof u === 'function' ? u(c.edges) : u }))}
                 nodeIds={nodeIds}
               />
             )}
             {leftTab === 'presets' && (
               <PresetBuilder
                 presets={config.presets || []}
-                setPresets={(presets) => setConfig(c => ({ ...c, presets }))}
+                setPresets={(u) => setConfig(c => ({ ...c, presets: typeof u === 'function' ? u(c.presets || []) : u }))}
               />
             )}
             {leftTab === 'input' && (
