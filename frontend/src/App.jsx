@@ -3,10 +3,11 @@ import NodeBuilder from './components/NodeBuilder'
 import EdgeBuilder from './components/EdgeBuilder'
 import InputPanel from './components/InputPanel'
 import PresetBuilder from './components/PresetBuilder'
+import ChatPanel from './components/ChatPanel'
 import EventViewer from './components/EventViewer'
 import PayloadPreview from './components/PayloadPreview'
 import SettingsPanel from './components/SettingsPanel'
-import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers } from 'lucide-react'
+import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers, MessageSquare } from 'lucide-react'
 
 const DEFAULT_BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -182,6 +183,7 @@ export default function App() {
     { id: 'presets',  label: 'Presets',  Icon: Layers },
     { id: 'input',    label: 'Input',    Icon: Database },
     { id: 'settings', label: 'Settings', Icon: Settings },
+    { id: 'chat',     label: 'Chat',     Icon: MessageSquare },
   ]
 
   const nodeIds = config.nodes.map(n => n.node_id)
@@ -220,8 +222,20 @@ export default function App() {
       {/* ── Main layout ── */}
       <div className="flex flex-1 overflow-hidden">
 
-        {/* ── Left panel ── */}
-        <div className="flex flex-col w-[440px] min-w-[340px] border-r border-slate-700 bg-slate-900 shrink-0">
+        {/* ── Full-width Chat panel (replaces split layout) ── */}
+        {leftTab === 'chat' && (
+          <ChatPanel
+            config={config}
+            apiKey={apiKey}
+            apiKeyType={apiKeyType}
+            azureEndpoint={azureEndpoint}
+            azureApiVersion={azureApiVersion}
+            backendUrl={backendUrl}
+          />
+        )}
+
+        {/* ── Left panel (hidden when Chat is active) ── */}
+        {leftTab !== 'chat' && <div className="flex flex-col w-[440px] min-w-[340px] border-r border-slate-700 bg-slate-900 shrink-0">
           <div className="flex border-b border-slate-700 bg-slate-800 shrink-0">
             {leftTabs.map(({ id, label, Icon }) => (
               <button
@@ -282,10 +296,10 @@ export default function App() {
               />
             )}
           </div>
-        </div>
+        </div>}
 
-        {/* ── Right panel ── */}
-        <div className="flex flex-col flex-1 min-w-0 bg-slate-900">
+        {/* ── Right panel (hidden when Chat is active) ── */}
+        {leftTab !== 'chat' && <div className="flex flex-col flex-1 min-w-0 bg-slate-900">
           <div className="flex border-b border-slate-700 bg-slate-800 shrink-0">
             {[
               { id: 'events',  label: 'Execution Events', Icon: Activity },
@@ -325,7 +339,7 @@ export default function App() {
               <PayloadPreview payload={payload} />
             )}
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   )
