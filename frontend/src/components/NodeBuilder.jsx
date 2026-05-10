@@ -168,8 +168,10 @@ function NodeCard({ node, onChange, onDelete, index }) {
                 onChange={e => {
                   const p = e.target.value
                   const m = MODELS_BY_PROVIDER[p]?.[0] || ''
-                  setModel('provider', p)
-                  setModel('model_name', m)
+                  onChange({
+                    ...node,
+                    agent: { ...node.agent, model: { ...node.agent.model, provider: p, model_name: m } },
+                  })
                 }}>
                 {PROVIDERS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
