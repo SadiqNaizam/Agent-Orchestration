@@ -397,7 +397,10 @@ export default function App() {
                 />
               )}
               {rightTab === 'payload' && (
-                <PayloadPreview payload={payload} />
+                <PayloadPreview
+                  payload={payload}
+                  onImport={(incoming) => setConfig(c => ({ ...c, ...incoming }))}
+                />
               )}
             </div>
           </div>
