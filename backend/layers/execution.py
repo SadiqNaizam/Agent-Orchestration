@@ -444,6 +444,13 @@ async def _run_agent(
 
     # ── Write to blackboard ───────────────────────────────────────────────────
     out_key = f"{node.node_id}.output"
+    # Preserve routing signals (next_agent, signal) that tool execution may have
+    # already written — do not overwrite them with the plain content dict.
+    existing = blackboard.read(out_key)
+    if isinstance(existing, dict):
+        for sig_key in ("signal", "next_agent"):
+            if sig_key in existing:
+                output[sig_key] = existing[sig_key]
     blackboard.write(out_key, output)
     out_keys = [out_key]
     for bb_key in node.output_mapping:
@@ -605,13 +612,18 @@ async def _run_with_tools(
                 "content":      json.dumps(result, default=str),
             })
 
-            # After route_to_sub_agent, write routing signal for DAG conditions
+            # After route_to_sub_agent, write routing signal and exit the loop so
+            # the DAG can immediately route to the sub-agent without an extra LLM
+            # round-trip that would hallucinate "I have delegated..." and overwrite
+            # the signal on the next blackboard write in _run_agent.
             if tc.function.name == "route_to_sub_agent":
                 selected = args.get("agent_id")
                 if selected:
                     out_so_far = blackboard.read(f"{node.node_id}.output") or {}
                     out_so_far["next_agent"] = selected
                     blackboard.write(f"{node.node_id}.output", out_so_far)
+                full_content = args.get("reason", f"Routing to {selected}")
+                goto_end = True
 
         if goto_end:
             break
