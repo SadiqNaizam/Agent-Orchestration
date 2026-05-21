@@ -7,7 +7,8 @@ import ChatPanel from './components/ChatPanel'
 import EventViewer from './components/EventViewer'
 import PayloadPreview from './components/PayloadPreview'
 import SettingsPanel from './components/SettingsPanel'
-import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers, MessageSquare } from 'lucide-react'
+import GraphViewer from './components/GraphViewer'
+import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers, MessageSquare, Network } from 'lucide-react'
 
 const DEFAULT_BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -376,6 +377,7 @@ export default function App() {
             <div className="flex border-b border-slate-700 bg-slate-800 shrink-0">
               {[
                 { id: 'events',  label: 'Execution Events', Icon: Activity },
+                { id: 'graph',   label: 'Graph View',       Icon: Network  },
                 { id: 'payload', label: 'JSON Payload',     Icon: Code },
               ].map(({ id, label, Icon }) => (
                 <button
@@ -409,6 +411,12 @@ export default function App() {
                   hitlPause={hitlPause}
                   backendUrl={backendUrl}
                   onHitlResume={() => setHitlPause(null)}
+                />
+              )}
+              {rightTab === 'graph' && (
+                <GraphViewer
+                  config={config}
+                  events={events}
                 />
               )}
               {rightTab === 'payload' && (
