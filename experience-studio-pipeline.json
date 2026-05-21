@@ -1,0 +1,219 @@
+{
+  "orchestration_id": "experience-studio-pipeline",
+  "name": "Experience Studio — Generate UI Design",
+  "description": "End-to-end UX design pipeline (Understand → Define → Design). Three preset patterns run as sequential branches on a shared blackboard: MSA for research coordination, Team for parallel insight generation, Hierarchical for design supervision. Accepts a product brief, research context, and design-system tokens; delivers a pixel-ready visual specification.",
+
+  "nodes": [],
+  "edges": [],
+
+  "presets": [
+
+    {
+      "_comment": "═══════════════════════════════════════════════════════════════════\n  PHASE 1 — UNDERSTAND   pattern: main_sub_agent (MSA)\n  Why MSA: An orchestrating synthesiser coordinates two specialist\n  research workers (problem_framer, market_researcher) via tool\n  routing, then merges their outputs into a single Understand Summary.\n  Generated nodes: understand_synthesiser (main), understand_problem_framer,\n  understand_market_researcher.  Final output key: understand_synthesiser.output\n═══════════════════════════════════════════════════════════════════",
+      "pattern": "main_sub_agent",
+      "preset_id": "understand",
+      "max_iterations": 8,
+      "exit_signal": "final_response",
+
+      "main_agent": {
+        "agent_id": "synthesiser",
+        "name": "Understand Orchestrator",
+        "description": "Coordinates the Understand phase. Dispatches problem-framing and market-research workers via tool calls, then synthesises their outputs into an Understand Summary.",
+        "system_prompt": "You are the lead UX research coordinator for the Understand phase. You control the sequence of analysis by delegating to two specialist sub-agents using tools. Do NOT attempt to answer the research questions yourself — delegate first, synthesise after.",
+        "instructions": "You have access to route_to_sub_agent and final_response tools.\n\nStep 1 — Route to problem_framer:\n  Call route_to_sub_agent(agent_id='problem_framer', reason='Deconstruct the product brief into a structured problem space.').\n\nStep 2 — Route to market_researcher:\n  After problem_framer returns, call route_to_sub_agent(agent_id='market_researcher', reason='Analyse the research context for user pain-points and market opportunities.').\n\nStep 3 — Synthesise:\n  Once both sub-agents have returned, synthesise their blackboard outputs into a concise Understand Summary covering:\n    - problem_statement (≤2 sentences)\n    - top_user_needs[] (3 items, evidence-backed)\n    - design_principles[] (3 items)\n    - key_tensions[] (3 business-vs-user conflicts)\n\nStep 4 — Emit final response:\n  Call final_response(response=<your JSON synthesis>).",
+        "model": {
+          "provider": "openai",
+          "model_name": "gpt-4o",
+          "temperature": 0.2
+        }
+      },
+
+      "sub_agents": [
+        {
+          "agent": {
+            "agent_id": "problem_framer",
+            "name": "Problem Framer",
+            "description": "Deconstructs the product brief into a structured problem space: goals, constraints, success metrics, and open questions.",
+            "system_prompt": "You are a senior product strategist. You receive a raw product brief and transform it into a clearly structured problem frame that will guide every downstream design decision.",
+            "instructions": "The product brief is on the blackboard under the key 'input.message'.\n\n1. Extract the core user problem and the primary business goal.\n2. Identify all explicit constraints (technical, regulatory, timeline, device, connectivity).\n3. List 3–5 measurable success metrics.\n4. Surface the top 5 open questions the design process must answer.\n5. Output a JSON object with keys: problem_statement, business_goal, constraints[], success_metrics[], open_questions[].",
+            "model": {
+              "provider": "openai",
+              "model_name": "gpt-4o",
+              "temperature": 0.15
+            }
+          },
+          "context_mode": "shared"
+        },
+        {
+          "agent": {
+            "agent_id": "market_researcher",
+            "name": "Market Researcher",
+            "description": "Analyses the research context and extracts competitive landscape, user pain-points, and market opportunities.",
+            "system_prompt": "You are a UX research analyst. You synthesise qualitative and quantitative research data into clear, actionable insights for product and design teams.",
+            "instructions": "The research context is on the blackboard under 'input.research_context'. The product brief is at 'input.message'.\n\n1. Parse the research context for user interview themes, survey data, and competitive analysis.\n2. Identify the top 5 user pain-points with supporting evidence.\n3. Identify 3–5 market opportunities or unmet needs.\n4. Note competitor strengths/weaknesses relevant to this product.\n5. Output JSON with keys: pain_points[{description, evidence}], opportunities[], competitor_insights[], key_findings[].",
+            "model": {
+              "provider": "openai",
+              "model_name": "gpt-4o",
+              "temperature": 0.2
+            }
+          },
+          "context_mode": "shared"
+        }
+      ],
+
+      "spawnable_agents": []
+    },
+
+    {
+      "_comment": "═══════════════════════════════════════════════════════════════════\n  PHASE 2 — DEFINE   pattern: team (sequential + summarize merge)\n  Why Team: Three specialist insight agents each produce a distinct\n  UX artefact (personas, journey map, HMW themes) from the shared\n  blackboard, building sequentially on each other's output.\n  A dedicated merge agent (info_architect) acts as the phase\n  synthesiser, consolidating all artefacts into a product IA.\n  Generated nodes: define_persona_creator, define_journey_mapper,\n  define_hmw_generator, define_merge.  Final output key: define_merge.output\n═══════════════════════════════════════════════════════════════════",
+      "pattern": "team",
+      "preset_id": "define",
+      "execution": "sequential",
+      "context_sharing": "shared",
+      "merge_strategy": "summarize",
+
+      "members": [
+        {
+          "agent": {
+            "agent_id": "persona_creator",
+            "name": "Persona Creator",
+            "description": "Builds 2–3 primary user personas grounded in the Understand-phase research evidence.",
+            "system_prompt": "You are a UX researcher specialising in user modelling. You craft vivid, evidence-based personas that keep design teams human-centred.",
+            "instructions": "Read the Understand Summary from the blackboard at 'understand_synthesiser.output' and the raw research context at 'input.research_context'.\n\n1. Identify 2–3 distinct user archetypes supported by research evidence.\n2. For each persona define: name, age_range, occupation, tech_savviness (1–5), primary_goal, key_frustrations[], typical_quote.\n3. Map each persona to at least one pain point from the market research.\n4. Tag each persona with the HMW themes they are most relevant to (leave blank for now; HMW agent runs next).\n5. Output a JSON object: { personas: [ ...persona objects... ] }",
+            "model": {
+              "provider": "openai",
+              "model_name": "gpt-4o",
+              "temperature": 0.3
+            }
+          }
+        },
+        {
+          "agent": {
+            "agent_id": "journey_mapper",
+            "name": "Journey Mapper",
+            "description": "Maps the end-to-end user journey for the primary persona, highlighting pain points and emotional highs and lows at every stage.",
+            "system_prompt": "You are a service-design specialist. You translate persona data into detailed journey maps that expose the highest-leverage opportunities for design intervention.",
+            "instructions": "Read the Understand Summary ('understand_synthesiser.output') and the personas ('define_persona_creator.output') from the blackboard.\n\n1. Select the primary persona (highest-priority user based on frequency and impact).\n2. Define 5–7 journey stages from first awareness through task completion and post-use.\n3. For each stage provide: stage_name, user_actions[], user_thoughts[], emotion_score (1–5), pain_points[], design_opportunities[].\n4. Identify the 3 most critical moments of truth (high emotion or high drop-off risk).\n5. Output JSON: { primary_persona_name, journey_stages[], moments_of_truth[] }",
+            "model": {
+              "provider": "openai",
+              "model_name": "gpt-4o",
+              "temperature": 0.25
+            }
+          }
+        },
+        {
+          "agent": {
+            "agent_id": "hmw_generator",
+            "name": "HMW Generator",
+            "description": "Converts journey pain points and opportunities into 'How Might We' design prompts grouped by theme.",
+            "system_prompt": "You are a design-thinking facilitator. You craft precise, actionable HMW statements that open up the solution space without over-constraining the designer.",
+            "instructions": "Read the journey map ('define_journey_mapper.output') and the Understand Summary ('understand_synthesiser.output') from the blackboard.\n\n1. Generate 8–12 HMW statements that span: usability, emotional safety, trust, efficiency, accessibility, and language inclusivity.\n2. Group HMWs into 3–4 themes (e.g. Trust, Speed, Language, Resilience).\n3. For each theme identify the single highest-priority HMW to address first.\n4. Assign a relevant persona name to each HMW.\n5. Output JSON: { hmw_themes: [{ theme, hmws[], priority_hmw, primary_persona }] }",
+            "model": {
+              "provider": "openai",
+              "model_name": "gpt-4o",
+              "temperature": 0.5
+            }
+          }
+        }
+      ],
+
+      "merge_agent": {
+        "agent_id": "info_architect",
+        "name": "Information Architect",
+        "description": "Synthesises all Define-phase outputs (personas, journey map, HMW themes) into a product information architecture.",
+        "system_prompt": "You are a senior information architect. You translate fuzzy design problems into clear structural blueprints that developers and designers can build from without ambiguity.",
+        "instructions": "Read the full Define-phase output from the blackboard:\n  - Personas:    define_persona_creator.output\n  - Journey map: define_journey_mapper.output\n  - HMW themes:  define_hmw_generator.output\n  - Understand summary: understand_synthesiser.output\n\n1. Define top-level navigation (≤6 items) with a one-sentence justification for each.\n2. Enumerate the core features required per navigation section.\n3. Create a sitemap as a nested JSON tree (max depth 3).\n4. Flag the top 3 accessibility considerations for the highest-traffic paths (WCAG AA).\n5. List the 3 primary screens that must be designed first (critical path).\n6. Output JSON: { navigation[], sitemap{}, core_features_by_section{}, accessibility_notes[], critical_path_screens[] }",
+        "model": {
+          "provider": "openai",
+          "model_name": "gpt-4o",
+          "temperature": 0.2
+        }
+      }
+    },
+
+    {
+      "_comment": "═══════════════════════════════════════════════════════════════════\n  PHASE 3 — DESIGN   pattern: hierarchical (single-level supervisor)\n  Why Hierarchical: The visual_designer acts as top-level design\n  director, dispatching three specialist subordinates in sequence\n  (screen_planner → design_system_analyser → wireframe_planner),\n  each returning results to the supervisor who then produces the\n  final integrated visual specification.\n  Generated nodes: design_visual_designer (supervisor),\n  design_screen_planner, design_design_system_analyser,\n  design_wireframe_planner.  Final output key: design_visual_designer.output\n═══════════════════════════════════════════════════════════════════",
+      "pattern": "hierarchical",
+      "preset_id": "design",
+
+      "levels": [
+        {
+          "supervisor": {
+            "agent_id": "visual_designer",
+            "name": "Visual Design Director",
+            "description": "Top-level design supervisor. Directs screen planning, design-system analysis, and wireframing; integrates all outputs into the final pixel-ready visual specification.",
+            "system_prompt": "You are a principal visual designer and design director. You oversee a team of specialist design workers. The executor will call your subordinates (screen_planner, design_system_analyser, wireframe_planner) and route their outputs back to you. After all three have completed, you produce the authoritative final design specification.",
+            "instructions": "The information architecture from the Define phase is on the blackboard at 'define_merge.output'. The design-system tokens are at 'input.design_system_tokens'.\n\nYour three subordinate workers have already run and their outputs are on the blackboard:\n  - Screen plan:          design_screen_planner.output\n  - Token analysis:       design_design_system_analyser.output\n  - Wireframe specs:      design_wireframe_planner.output\n\nUsing all these inputs, produce the final visual specification:\n1. For each screen, apply colour, typography, spacing, and shadow tokens to every component listed in the wireframe.\n2. Define all interactive states per interactive component: default, hover, focus, active, disabled, error.\n3. Specify motion/animation parameters for each screen transition: duration (ms), easing curve, trigger event.\n4. Write a WCAG AA compliance note per screen: contrast ratio for primary text, focus order, minimum touch-target sizes.\n5. Produce a final QA checklist (minimum 10 items) covering visual consistency, accessibility, and responsive behaviour.\n6. Output JSON: { visual_screens[], motion_guidelines[], wcag_notes[], qa_checklist[] }",
+            "model": {
+              "provider": "openai",
+              "model_name": "gpt-4o",
+              "temperature": 0.25
+            }
+          },
+
+          "subordinates": [
+            {
+              "agent": {
+                "agent_id": "screen_planner",
+                "name": "Screen Planner",
+                "description": "Enumerates all product screens, defines each screen's purpose, primary action, required components, and navigation connections.",
+                "system_prompt": "You are a product designer with deep expertise in mobile and web screen architecture. You produce exhaustive screen inventories that leave no user flow or edge case unplanned.",
+                "instructions": "Read the information architecture from the blackboard at 'define_merge.output' and the primary personas at 'define_persona_creator.output'.\n\n1. Enumerate ALL screens using the sitemap and feature list from the IA.\n2. For each screen: screen_id, screen_name, purpose (one sentence), primary_action, components[], entry_points[], exit_points[], relevant_persona.\n3. Group screens into flows: onboarding, core task, settings, error/empty states, notifications.\n4. Identify shared/reusable components that appear across 3+ screens.\n5. Output JSON: { screen_flows[{ flow_name, screens[] }], shared_components[] }",
+                "model": {
+                  "provider": "openai",
+                  "model_name": "gpt-4o",
+                  "temperature": 0.2
+                }
+              },
+              "context_mode": "shared"
+            },
+            {
+              "agent": {
+                "agent_id": "design_system_analyser",
+                "name": "Design System Analyser",
+                "description": "Parses the user-supplied design-system tokens and maps colour, typography, spacing, and component tokens to every planned screen.",
+                "system_prompt": "You are a design-systems engineer. You translate raw design tokens into a component inventory with precise usage rules for every screen in the product, and flag any gaps.",
+                "instructions": "Read the design-system tokens from the blackboard at 'input.design_system_tokens' and the screen plan at 'design_screen_planner.output'.\n\n1. Parse all token categories: colour palette, typography scale, spacing scale, border-radius, shadow levels, named component tokens.\n2. Map each token category to the relevant components from the screen plan (component → token mapping table).\n3. Identify token gaps: screens or components that need a token not present in the existing set.\n4. For each gap, suggest 1–3 new tokens with name, value, and usage rationale.\n5. Flag any colour-contrast issues relative to WCAG AA (4.5:1 for normal text, 3:1 for large text).\n6. Output JSON: { token_inventory{}, component_token_map{}, gaps[], suggested_new_tokens[], contrast_warnings[] }",
+                "model": {
+                  "provider": "openai",
+                  "model_name": "gpt-4o",
+                  "temperature": 0.15
+                }
+              },
+              "context_mode": "shared"
+            },
+            {
+              "agent": {
+                "agent_id": "wireframe_planner",
+                "name": "Wireframe Planner",
+                "description": "Produces a detailed, component-level wireframe specification for every screen — precise enough for an engineer to implement without a designer present.",
+                "system_prompt": "You are a senior UX designer who writes pixel-precise wireframe specs. Your output is so complete and unambiguous that a developer can build the layout without any further clarification.",
+                "instructions": "Read the screen plan ('design_screen_planner.output'), the design-system analysis ('design_design_system_analyser.output'), and the information architecture ('define_merge.output') from the blackboard.\n\n1. For each screen in the screen plan, produce a wireframe spec.\n2. Each spec must include:\n   - layout_grid: { columns, gutter_px, margin_px, max_width_px }\n   - component_list: [{ component_name, token_applied, position (top/center/bottom + left/center/right), width_hint, height_hint, content_placeholder, z_index }]\n   - interaction_notes: [{ trigger, action, transition }]\n   - responsive_behaviour: describe changes at mobile, tablet, desktop breakpoints\n3. Annotate accessibility requirements per interactive component: minimum touch target, focus ring colour, aria-label hint.\n4. Output JSON array: { wireframes: [{ screen_id, screen_name, layout_grid{}, component_list[], interaction_notes[], responsive_behaviour, accessibility_notes[] }] }",
+                "model": {
+                  "provider": "openai",
+                  "model_name": "gpt-4o",
+                  "temperature": 0.2
+                }
+              },
+              "context_mode": "shared"
+            }
+          ]
+        }
+      ]
+    }
+
+  ],
+
+  "streaming": {
+    "chunk_size_chars": 300,
+    "provenance_enabled": false
+  },
+
+  "input": {
+    "message": "Design a ride-hailing app for tier-2 and tier-3 cities in India. The app must work reliably on 2G/3G networks, support Hindi and 4 regional languages, and serve users who are first-time smartphone owners. Core flows: book a ride, track driver, pay (UPI + cash), rate trip. Key differentiators: voice-first booking, offline queue when connectivity drops, driver trust indicators.",
+
+    "research_context": "User interviews (n=24) across Patna, Indore, Coimbatore, and Surat. 71% first-time smartphone users; 63% rely on feature-phone habits (voice calls, SMS). Top pain-points: (1) English-only interfaces, (2) fear of being cheated on fare, (3) app crashes on low-end devices, (4) distrust of unknown drivers. Competitive analysis: Ola and Uber have 80%+ urban penetration but <20% rural; local aggregators (Rapido, Namma Yatri) growing fastest. Survey (n=210): 88% prefer voice or vernacular over English text; 76% trust government-backed payment rails (UPI). Driver interviews (n=12): key complaint is unclear navigation; prefer WhatsApp-style task cards over formal dashboards.",
+
+    "design_system_tokens": "Primary: primary-500=#6366F1, primary-600=#4F46E5, primary-100=#E0E7FF | Neutral: gray-50=#F9FAFB, gray-100=#F3F4F6, gray-700=#374151, gray-900=#111827 | Semantic: success=#22C55E, warning=#F59E0B, error=#EF4444, info=#3B82F6 | Typography: font-family='Inter,Noto Sans,sans-serif'; size-xs=12px, size-sm=14px, size-base=16px, size-lg=18px, size-xl=24px, size-2xl=30px; weight-normal=400, weight-medium=500, weight-bold=700 | Spacing: space-1=4px, space-2=8px, space-3=12px, space-4=16px, space-6=24px, space-8=32px, space-12=48px | Radius: radius-sm=4px, radius-md=8px, radius-lg=12px, radius-full=9999px | Shadow: shadow-sm='0 1px 2px rgba(0,0,0,0.05)', shadow-md='0 4px 6px rgba(0,0,0,0.07)', shadow-lg='0 10px 15px rgba(0,0,0,0.10)' | Components: btn-height-md=44px, btn-height-lg=52px, input-height=48px, touch-target-min=44px, card-padding=16px, nav-height=56px"
+  }
+}
