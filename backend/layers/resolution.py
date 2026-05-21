@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from models import (
-    AgentDefinition, EdgeCondition, EdgeConfig, LoopConfig,
+    AgentDefinition, EdgeCondition, EdgeConfig, HitlConfig, LoopConfig,
     ModelConfig, NodeConfig, OrchestrationConfig,
 )
 
@@ -119,8 +119,25 @@ def _agent_def(raw: dict) -> AgentDefinition:
     )
 
 
-def _node(node_id: str, agent: AgentDefinition, context_mode: str = "scoped") -> NodeConfig:
-    return NodeConfig(node_id=node_id, agent=agent, context_mode=context_mode)
+def _node(
+    node_id: str,
+    agent: AgentDefinition,
+    context_mode: str = "scoped",
+    hitl: Optional[HitlConfig] = None,
+) -> NodeConfig:
+    return NodeConfig(node_id=node_id, agent=agent, context_mode=context_mode, hitl=hitl)
+
+
+def _hitl(raw: dict) -> Optional[HitlConfig]:
+    """Extract and parse an optional 'hitl' entry from a preset raw dict."""
+    h = raw.get("hitl")
+    if not h:
+        return None
+    return HitlConfig(
+        prompt=h["prompt"],
+        input_key=h.get("input_key", "human_input"),
+        timeout_seconds=h.get("timeout_seconds"),
+    )
 
 
 def _edge(
@@ -260,12 +277,12 @@ def _expand_main_sub_agent(raw: dict):
     tools.append(_final_response_tool(exit_signal))
     main_agent.tools = tools
 
-    nodes = [_node(main_id, main_agent, "shared")]
+    nodes = [_node(main_id, main_agent, "shared", hitl=_hitl(main_raw))]
     edges = [_edge(f"{pid}_start", "__start__", main_id)]
 
-    for sa, cm in sub_agents:
+    for (sa, cm), sub_raw in zip(sub_agents, subs_raw):
         sa_node_id = f"{pid}_{sa.agent_id}"
-        nodes.append(_node(sa_node_id, sa, cm))
+        nodes.append(_node(sa_node_id, sa, cm, hitl=_hitl(sub_raw)))
         # main → sub (condition: main output signals this sub-agent)
         edges.append(_edge(
             f"{pid}_to_{sa.agent_id}", main_id, sa_node_id,
@@ -312,7 +329,7 @@ def _expand_team(raw: dict):
         ma      = _agent_def(m["agent"])
         node_id = f"{pid}_{ma.agent_id}"
         member_ids.append(node_id)
-        nodes.append(_node(node_id, ma, cm))
+        nodes.append(_node(node_id, ma, cm, hitl=_hitl(m)))
 
     prev = "__start__"
     for nid in member_ids:
@@ -322,7 +339,7 @@ def _expand_team(raw: dict):
     if strategy == "summarize" and merge_raw:
         ma       = _agent_def(merge_raw)
         merge_id = f"{pid}_merge"
-        nodes.append(_node(merge_id, ma, "shared"))
+        nodes.append(_node(merge_id, ma, "shared", hitl=_hitl(merge_raw)))
         edges.append(_edge(f"{pid}_to_merge", prev, merge_id))
         edges.append(_edge(f"{pid}_merge_end", merge_id, "__end__"))
     else:
@@ -348,16 +365,16 @@ def _expand_hierarchical(raw: dict):
 
         if lvl_idx == 0:
             top_sup_id = sup_id
-            nodes.append(_node(sup_id, sup, "shared"))
+            nodes.append(_node(sup_id, sup, "shared", hitl=_hitl(lvl["supervisor"])))
             edges.append(_edge(f"{pid}_start", "__start__", sup_id))
         else:
-            nodes.append(_node(sup_id, sup, "scoped"))
+            nodes.append(_node(sup_id, sup, "scoped", hitl=_hitl(lvl["supervisor"])))
 
         for sub_raw in lvl.get("subordinates", []):
             sub    = _agent_def(sub_raw["agent"])
             sub_id = f"{pid}_{sub.agent_id}"
             cm     = sub_raw.get("context_mode", "scoped")
-            nodes.append(_node(sub_id, sub, cm))
+            nodes.append(_node(sub_id, sub, cm, hitl=_hitl(sub_raw)))
             edges.append(_edge(f"{pid}_{sup.agent_id}_to_{sub.agent_id}", sup_id, sub_id))
             edges.append(_edge(f"{pid}_{sub.agent_id}_return", sub_id, sup_id))
 

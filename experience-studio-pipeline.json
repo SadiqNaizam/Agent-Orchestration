@@ -20,11 +20,16 @@
         "name": "Understand Orchestrator",
         "description": "Coordinates the Understand phase. Dispatches problem-framing and market-research workers via tool calls, then synthesises their outputs into an Understand Summary.",
         "system_prompt": "You are the lead UX research coordinator for the Understand phase. You control the sequence of analysis by delegating to two specialist sub-agents using tools. Do NOT attempt to answer the research questions yourself — delegate first, synthesise after.",
-        "instructions": "You have access to route_to_sub_agent and final_response tools.\n\nStep 1 — Route to problem_framer:\n  Call route_to_sub_agent(agent_id='problem_framer', reason='Deconstruct the product brief into a structured problem space.').\n\nStep 2 — Route to market_researcher:\n  After problem_framer returns, call route_to_sub_agent(agent_id='market_researcher', reason='Analyse the research context for user pain-points and market opportunities.').\n\nStep 3 — Synthesise:\n  Once both sub-agents have returned, synthesise their blackboard outputs into a concise Understand Summary covering:\n    - problem_statement (≤2 sentences)\n    - top_user_needs[] (3 items, evidence-backed)\n    - design_principles[] (3 items)\n    - key_tensions[] (3 business-vs-user conflicts)\n\nStep 4 — Emit final response:\n  Call final_response(response=<your JSON synthesis>).",
+        "instructions": "You have access to route_to_sub_agent and final_response tools.\n\nIf a human reviewer has provided guidance (check the blackboard at 'understand_synthesiser.human_input'), incorporate their notes when framing the research questions and final synthesis.\n\nStep 1 — Route to problem_framer:\n  Call route_to_sub_agent(agent_id='problem_framer', reason='Deconstruct the product brief into a structured problem space.').\n\nStep 2 — Route to market_researcher:\n  After problem_framer returns, call route_to_sub_agent(agent_id='market_researcher', reason='Analyse the research context for user pain-points and market opportunities.').\n\nStep 3 — Synthesise:\n  Once both sub-agents have returned, synthesise their blackboard outputs into a concise Understand Summary covering:\n    - problem_statement (≤2 sentences)\n    - top_user_needs[] (3 items, evidence-backed)\n    - design_principles[] (3 items)\n    - key_tensions[] (3 business-vs-user conflicts)\n\nStep 4 — Emit final response:\n  Call final_response(response=<your JSON synthesis>).",
         "model": {
           "provider": "openai",
           "model_name": "gpt-4o",
           "temperature": 0.2
+        },
+        "hitl": {
+          "prompt": "UNDERSTAND PHASE — Pre-flight review\n\nThe pipeline is about to begin research. Please review the product brief and research context loaded in the 'input' panel, then provide any:\n  • Corrections or clarifications to the brief\n  • Additional context the agents should know\n  • Specific constraints or focus areas to prioritise\n\nLeave blank and submit to proceed with the supplied inputs as-is.",
+          "input_key": "human_input",
+          "timeout_seconds": null
         }
       },
 
@@ -122,11 +127,16 @@
         "name": "Information Architect",
         "description": "Synthesises all Define-phase outputs (personas, journey map, HMW themes) into a product information architecture.",
         "system_prompt": "You are a senior information architect. You translate fuzzy design problems into clear structural blueprints that developers and designers can build from without ambiguity.",
-        "instructions": "Read the full Define-phase output from the blackboard:\n  - Personas:    define_persona_creator.output\n  - Journey map: define_journey_mapper.output\n  - HMW themes:  define_hmw_generator.output\n  - Understand summary: understand_synthesiser.output\n\n1. Define top-level navigation (≤6 items) with a one-sentence justification for each.\n2. Enumerate the core features required per navigation section.\n3. Create a sitemap as a nested JSON tree (max depth 3).\n4. Flag the top 3 accessibility considerations for the highest-traffic paths (WCAG AA).\n5. List the 3 primary screens that must be designed first (critical path).\n6. Output JSON: { navigation[], sitemap{}, core_features_by_section{}, accessibility_notes[], critical_path_screens[] }",
+        "instructions": "Read the full Define-phase output from the blackboard:\n  - Personas:    define_persona_creator.output\n  - Journey map: define_journey_mapper.output\n  - HMW themes:  define_hmw_generator.output\n  - Understand summary: understand_synthesiser.output\n\nIf a human reviewer has provided guidance (check 'define_merge.human_input' on the blackboard), incorporate their feedback — e.g. dropping a persona, reprioritising HMW themes, or adjusting the navigation scope.\n\n1. Define top-level navigation (≤6 items) with a one-sentence justification for each.\n2. Enumerate the core features required per navigation section.\n3. Create a sitemap as a nested JSON tree (max depth 3).\n4. Flag the top 3 accessibility considerations for the highest-traffic paths (WCAG AA).\n5. List the 3 primary screens that must be designed first (critical path).\n6. Output JSON: { navigation[], sitemap{}, core_features_by_section{}, accessibility_notes[], critical_path_screens[] }",
         "model": {
           "provider": "openai",
           "model_name": "gpt-4o",
           "temperature": 0.2
+        },
+        "hitl": {
+          "prompt": "DEFINE PHASE — Review before IA synthesis\n\nThe three Define agents have completed:\n  • Persona Creator  →  define_persona_creator.output\n  • Journey Mapper   →  define_journey_mapper.output\n  • HMW Generator    →  define_hmw_generator.output\n\nBefore the Information Architect synthesises these into the product IA, please review the outputs above and provide any:\n  • Personas to drop, merge, or reprioritise\n  • Journey stages that need correction\n  • HMW themes to add, remove, or re-weight\n  • Navigation or feature scope constraints\n\nLeave blank and submit to accept all outputs as-is.",
+          "input_key": "human_input",
+          "timeout_seconds": null
         }
       }
     },
@@ -143,11 +153,16 @@
             "name": "Visual Design Director",
             "description": "Top-level design supervisor. Directs screen planning, design-system analysis, and wireframing; integrates all outputs into the final pixel-ready visual specification.",
             "system_prompt": "You are a principal visual designer and design director. You oversee a team of specialist design workers. The executor will call your subordinates (screen_planner, design_system_analyser, wireframe_planner) and route their outputs back to you. After all three have completed, you produce the authoritative final design specification.",
-            "instructions": "The information architecture from the Define phase is on the blackboard at 'define_merge.output'. The design-system tokens are at 'input.design_system_tokens'.\n\nYour three subordinate workers have already run and their outputs are on the blackboard:\n  - Screen plan:          design_screen_planner.output\n  - Token analysis:       design_design_system_analyser.output\n  - Wireframe specs:      design_wireframe_planner.output\n\nUsing all these inputs, produce the final visual specification:\n1. For each screen, apply colour, typography, spacing, and shadow tokens to every component listed in the wireframe.\n2. Define all interactive states per interactive component: default, hover, focus, active, disabled, error.\n3. Specify motion/animation parameters for each screen transition: duration (ms), easing curve, trigger event.\n4. Write a WCAG AA compliance note per screen: contrast ratio for primary text, focus order, minimum touch-target sizes.\n5. Produce a final QA checklist (minimum 10 items) covering visual consistency, accessibility, and responsive behaviour.\n6. Output JSON: { visual_screens[], motion_guidelines[], wcag_notes[], qa_checklist[] }",
+            "instructions": "The information architecture from the Define phase is on the blackboard at 'define_merge.output'. The design-system tokens are at 'input.design_system_tokens'.\n\nYour three subordinate workers have already run and their outputs are on the blackboard:\n  - Screen plan:          design_screen_planner.output\n  - Token analysis:       design_design_system_analyser.output\n  - Wireframe specs:      design_wireframe_planner.output\n\nIf a human reviewer has provided guidance (check 'design_visual_designer.human_input' on the blackboard), apply their feedback — e.g. adjusting component priorities, fixing token mismatches, or changing the interaction model for specific screens — before generating the final spec.\n\nUsing all these inputs, produce the final visual specification:\n1. For each screen, apply colour, typography, spacing, and shadow tokens to every component listed in the wireframe.\n2. Define all interactive states per interactive component: default, hover, focus, active, disabled, error.\n3. Specify motion/animation parameters for each screen transition: duration (ms), easing curve, trigger event.\n4. Write a WCAG AA compliance note per screen: contrast ratio for primary text, focus order, minimum touch-target sizes.\n5. Produce a final QA checklist (minimum 10 items) covering visual consistency, accessibility, and responsive behaviour.\n6. Output JSON: { visual_screens[], motion_guidelines[], wcag_notes[], qa_checklist[] }",
             "model": {
               "provider": "openai",
               "model_name": "gpt-4o",
               "temperature": 0.25
+            },
+            "hitl": {
+              "prompt": "DESIGN PHASE — Review before visual specification\n\nThe three Design workers have completed:\n  • Screen Planner          →  design_screen_planner.output\n  • Design System Analyser  →  design_design_system_analyser.output\n  • Wireframe Planner       →  design_wireframe_planner.output\n\nBefore the Visual Design Director produces the final pixel-ready spec, please review the wireframes and token analysis above and provide any:\n  • Screens to add, remove, or restructure\n  • Token gaps or overrides (e.g. 'use primary-600 not primary-500 for CTAs')\n  • Interaction or animation changes\n  • Accessibility requirements beyond WCAG AA\n  • Any other visual direction\n\nLeave blank and submit to proceed with the generated wireframes as-is.",
+              "input_key": "human_input",
+              "timeout_seconds": null
             }
           },
 

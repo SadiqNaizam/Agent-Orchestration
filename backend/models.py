@@ -42,6 +42,7 @@ class NodeConfig(BaseModel):
     input_mapping: Dict[str, str] = {}   # local_key → JSONPath expression
     output_mapping: Dict[str, str] = {}  # blackboard_key → (reserved for future use)
     error_policy: Optional[NodeErrorPolicy] = None
+    hitl: Optional["HitlConfig"] = None
 
 
 # ── Edge ──────────────────────────────────────────────────────────────────────
@@ -101,6 +102,18 @@ class CompactionConfig(BaseModel):
     min_recency_window: int = 2
 
 
+# ── HITL ───────────────────────────────────────────────────────────────────────
+
+class HitlConfig(BaseModel):
+    prompt: str                           # Message shown to the human reviewer
+    input_key: str = "human_input"        # Blackboard key suffix for the response
+    timeout_seconds: Optional[int] = None # None = wait indefinitely
+
+
+# Resolve forward reference in NodeConfig now that HitlConfig is defined
+NodeConfig.model_rebuild()
+
+
 # ── Streaming ─────────────────────────────────────────────────────────────────
 
 class StreamingConfig(BaseModel):
@@ -146,6 +159,10 @@ class OrchestrationConfig(BaseModel):
 class JobResponse(BaseModel):
     job_id: str
     status: str = "queued"
+
+
+class HitlResumeRequest(BaseModel):
+    input: Dict[str, Any]
 
 
 # ── Chat ───────────────────────────────────────────────────────────────────────
