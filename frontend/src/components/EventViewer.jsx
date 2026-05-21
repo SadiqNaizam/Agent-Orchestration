@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { Trash2, Download } from 'lucide-react'
+import HitlPanel from './HitlPanel'
 
 // ── Display entry derivation ───────────────────────────────────────────────────
 //
@@ -160,6 +161,18 @@ function EventLine({ event }) {
       cls  = p.status === 'success' ? 'text-green-400' : 'text-amber-400'
       break
 
+    case 'hitl_pause':
+      icon = '⏸'
+      text = `HITL PAUSE  [${event.node_id}]  · ${p.prompt?.slice(0, 80)}${(p.prompt?.length ?? 0) > 80 ? '…' : ''}`
+      cls  = 'text-amber-400'
+      break
+
+    case 'hitl_resume':
+      icon = '▶'
+      text = `HITL RESUME  [${event.node_id}]  · input written to ${event.node_id}.${p.input_key}`
+      cls  = 'text-green-400'
+      break
+
     case 'info':
       icon = '·'
       text = p.message || ''
@@ -183,7 +196,7 @@ function EventLine({ event }) {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function EventViewer({ events, isRunning, onClear }) {
+export default function EventViewer({ events, isRunning, onClear, hitlPause, backendUrl, onHitlResume }) {
   const bottomRef = useRef(null)
   const entries   = useMemo(() => deriveEntries(events), [events])
 
@@ -249,6 +262,13 @@ export default function EventViewer({ events, isRunning, onClear }) {
                 ? <div key={i} className="px-3 mb-1"><NodeBlock block={entry} /></div>
                 : <EventLine key={i} event={entry.event} />
             ))}
+            {hitlPause && (
+              <HitlPanel
+                pause={hitlPause}
+                backendUrl={backendUrl}
+                onResume={onHitlResume}
+              />
+            )}
             <div ref={bottomRef} className="h-4" />
           </>
         )}

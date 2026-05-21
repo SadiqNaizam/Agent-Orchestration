@@ -8,10 +8,11 @@ Puts structured event envelopes into log_queue until the terminal
 
 import asyncio
 import time
+from typing import Optional
 
 from blackboard import Blackboard
 from layers.definition import DefinitionError, validate_config
-from layers.execution import run_dag
+from layers.execution import HitlGate, run_dag
 from layers.resolution import ResolutionError, resolve
 from models import OrchestrationConfig
 from streaming import StreamingEmitter
@@ -20,6 +21,7 @@ from streaming import StreamingEmitter
 async def run_orchestration(
     config: OrchestrationConfig,
     log_queue: asyncio.Queue,
+    hitl_gate: Optional[HitlGate] = None,
 ) -> None:
     emitter    = StreamingEmitter(config.orchestration_id, log_queue)
     start_time = time.time()
@@ -41,7 +43,7 @@ async def run_orchestration(
         )
 
         status, n_exec, n_fail, n_compact = await run_dag(
-            plan, blackboard, emitter, config
+            plan, blackboard, emitter, config, hitl_gate
         )
 
         total_tok = blackboard.total_tokens

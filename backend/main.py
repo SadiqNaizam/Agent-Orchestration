@@ -11,9 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from chat_executor import run_chat_turn
+from layers.execution import HitlGate
 from models import (
     ChatCreateRequest, ChatMessageRequest, ChatSession, ChatSessionInfo,
-    JobResponse, OrchestrationConfig,
+    HitlResumeRequest, JobResponse, OrchestrationConfig,
 )
 from orchestrator import run_orchestration
 
@@ -21,6 +22,7 @@ load_dotenv()
 
 _JOBS: dict[str, asyncio.Queue] = {}
 _SESSIONS: dict[str, ChatSession] = {}
+_HITL: dict[str, HitlGate] = {}
 
 
 @asynccontextmanager
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
     yield
     _JOBS.clear()
     _SESSIONS.clear()
+    _HITL.clear()
 
 
 app = FastAPI(
@@ -59,9 +62,11 @@ async def orchestrate(config: OrchestrationConfig):
 
     job_id = str(uuid.uuid4())
     queue: asyncio.Queue = asyncio.Queue()
-    _JOBS[job_id] = queue
+    gate = HitlGate(job_id)
+    _JOBS[job_id]  = queue
+    _HITL[job_id]  = gate
 
-    asyncio.create_task(run_orchestration(config, queue))
+    asyncio.create_task(run_orchestration(config, queue, gate))
 
     return JobResponse(job_id=job_id, status="queued")
 
@@ -94,6 +99,7 @@ async def stream_logs(job_id: str):
                     break
         finally:
             _JOBS.pop(job_id, None)
+            _HITL.pop(job_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -103,6 +109,15 @@ async def stream_logs(job_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.post("/api/jobs/{job_id}/hitl")
+async def resume_hitl(job_id: str, req: HitlResumeRequest):
+    gate = _HITL.get(job_id)
+    if gate is None:
+        raise HTTPException(status_code=404, detail="Job not found or no active HITL checkpoint")
+    gate.resume(req.input)
+    return {"status": "resumed", "job_id": job_id}
 
 
 # ── Chat endpoints ─────────────────────────────────────────────────────────────

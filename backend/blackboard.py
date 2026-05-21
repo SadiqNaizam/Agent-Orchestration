@@ -23,6 +23,7 @@ class Blackboard:
         now = datetime.now(timezone.utc).isoformat()
         self._store: Dict[str, Any] = {
             "__input__": input_data,
+            "input":     input_data,   # also exposed as a regular key for shared-context agents
             "__orchestration_metadata__": {
                 "orchestration_id": orchestration_id,
                 "started_at": now,

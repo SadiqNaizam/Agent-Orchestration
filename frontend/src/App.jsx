@@ -135,6 +135,7 @@ export default function App() {
   const [events,   setEvents]   = useState([])
   const [isRunning, setIsRunning] = useState(false)
   const [jobId,    setJobId]    = useState(null)
+  const [hitlPause, setHitlPause] = useState(null)   // { node_id, prompt, job_id } | null
   const esRef = useRef(null)
 
   // ── Build payload ──────────────────────────────────────────────────────────
@@ -191,8 +192,18 @@ export default function App() {
           esRef.current = null
           setIsRunning(false)
           setJobId(null)
+          setHitlPause(null)
         } else if (item.type === 'event') {
           setEvents(prev => [...prev, item.data])
+          if (item.data.event_type === 'hitl_pause') {
+            setHitlPause({
+              node_id: item.data.node_id,
+              prompt:  item.data.payload?.prompt,
+              job_id:  item.data.payload?.job_id,
+            })
+          } else if (item.data.event_type === 'hitl_resume') {
+            setHitlPause(null)
+          }
         }
       }
 
@@ -229,6 +240,7 @@ export default function App() {
     }])
     setIsRunning(false)
     setJobId(null)
+    setHitlPause(null)
   }, [])
 
   // ── Tab config ─────────────────────────────────────────────────────────────
@@ -394,6 +406,9 @@ export default function App() {
                   events={events}
                   isRunning={isRunning}
                   onClear={() => setEvents([])}
+                  hitlPause={hitlPause}
+                  backendUrl={backendUrl}
+                  onHitlResume={() => setHitlPause(null)}
                 />
               )}
               {rightTab === 'payload' && (

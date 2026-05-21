@@ -32,11 +32,44 @@ import litellm
 
 from blackboard import Blackboard
 from models import (
-    AgentDefinition, CompactionConfig, NodeConfig,
+    AgentDefinition, CompactionConfig, HitlConfig, NodeConfig,
     NodeErrorPolicy, OrchestrationConfig,
 )
 from streaming import StreamingEmitter
 from layers.resolution import ExecutionPlan
+
+
+# ── HITL gate ─────────────────────────────────────────────────────────────────
+
+class HitlGate:
+    """Per-job pause/resume gate for Human-in-the-Loop checkpoints.
+
+    The execution coroutine awaits ``wait()``; the HTTP handler calls ``resume()``.
+    ``reset()`` prepares the gate for the *next* HITL checkpoint in the same job.
+    """
+
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        self._event: asyncio.Event = asyncio.Event()
+        self.input: Optional[Dict[str, Any]] = None
+
+    async def wait(self, timeout: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        if timeout is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._event.wait()), timeout=timeout)
+            except asyncio.TimeoutError:
+                return None
+        else:
+            await self._event.wait()
+        return self.input
+
+    def resume(self, input_data: Dict[str, Any]) -> None:
+        self.input = input_data
+        self._event.set()
+
+    def reset(self) -> None:
+        self._event.clear()
+        self.input = None
 
 
 # ── Runtime context ────────────────────────────────────────────────────────────
@@ -50,6 +83,7 @@ class _Ctx:
     chunk_size:         int
     provenance_enabled: bool
     node_chain:         List[str] = field(default_factory=list)   # nodes completed so far
+    hitl_gate:          Optional["HitlGate"] = None
 
     def provenance_for(self, node_id: str) -> Optional[dict]:
         if not self.provenance_enabled:
@@ -88,6 +122,7 @@ async def run_dag(
     blackboard: Blackboard,
     emitter: StreamingEmitter,
     config: OrchestrationConfig,
+    hitl_gate: Optional["HitlGate"] = None,
 ) -> Tuple[str, int, int, int]:
     """
     Walk the graph from __start__ to __end__.
@@ -99,6 +134,7 @@ async def run_dag(
         creds=_Creds(config),
         chunk_size=config.streaming.chunk_size_chars if config.streaming else 500,
         provenance_enabled=bool(config.streaming and config.streaming.provenance_enabled),
+        hitl_gate=hitl_gate,
     )
 
     nodes_executed  = 0
@@ -391,6 +427,18 @@ async def _run_agent(
     ctx: _Ctx,
 ) -> None:
     agent = node.agent
+
+    # ── HITL checkpoint (fires before LLM execution) ──────────────────────────
+    if node.hitl and ctx.hitl_gate:
+        hitl_cfg = node.hitl
+        await emitter.hitl_pause(node.node_id, hitl_cfg.prompt, ctx.hitl_gate.job_id)
+        human_input = await ctx.hitl_gate.wait(
+            timeout=float(hitl_cfg.timeout_seconds) if hitl_cfg.timeout_seconds else None
+        )
+        if human_input is not None:
+            blackboard.write(f"{node.node_id}.{hitl_cfg.input_key}", human_input)
+        ctx.hitl_gate.reset()
+        await emitter.hitl_resume(node.node_id, hitl_cfg.input_key)
 
     # ── Resolve input ─────────────────────────────────────────────────────────
     if node.context_mode == "shared":

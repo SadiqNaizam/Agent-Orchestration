@@ -11,7 +11,8 @@ Envelope format (matches the architecture spec):
     "timestamp":        ISO-8601 string,
     "event_type":       "node_start" | "chunk" | "node_complete" |
                         "routing_decision" | "loop_iteration" |
-                        "compaction_event" | "error" | "orchestration_complete",
+                        "compaction_event" | "error" | "orchestration_complete" |
+                        "hitl_pause" | "hitl_resume",
     "node_id":          str | null,
     "node_type":        "agent" | "tool" | "component" | "merge" |
                         "spawned_agent" | "system" | null,
@@ -174,6 +175,31 @@ class StreamingEmitter:
                 "policy_applied": policy_applied,
                 "attempt_number": attempt_number,
             },
+            node_id=node_id,
+            node_type="system",
+        )
+
+    async def hitl_pause(
+        self,
+        node_id: str,
+        prompt: str,
+        job_id: str,
+    ) -> None:
+        await self._emit(
+            "hitl_pause",
+            {"prompt": prompt, "job_id": job_id},
+            node_id=node_id,
+            node_type="system",
+        )
+
+    async def hitl_resume(
+        self,
+        node_id: str,
+        input_key: str,
+    ) -> None:
+        await self._emit(
+            "hitl_resume",
+            {"input_key": input_key},
             node_id=node_id,
             node_type="system",
         )
