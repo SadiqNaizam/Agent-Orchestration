@@ -20,7 +20,7 @@
         "name": "Understand Orchestrator",
         "description": "Coordinates the Understand phase. Dispatches problem-framing and market-research workers via tool calls, then synthesises their outputs into an Understand Summary.",
         "system_prompt": "You are the lead UX research coordinator for the Understand phase. You control the sequence of analysis by delegating to two specialist sub-agents using tools. Do NOT attempt to answer the research questions yourself — delegate first, synthesise after.",
-        "instructions": "You have access to route_to_sub_agent and final_response tools.\n\nIf a human reviewer has provided guidance (check the blackboard at 'understand_synthesiser.human_input'), incorporate their notes when framing the research questions and final synthesis.\n\nStep 1 — Route to problem_framer:\n  Call route_to_sub_agent(agent_id='problem_framer', reason='Deconstruct the product brief into a structured problem space.').\n\nStep 2 — Route to market_researcher:\n  After problem_framer returns, call route_to_sub_agent(agent_id='market_researcher', reason='Analyse the research context for user pain-points and market opportunities.').\n\nStep 3 — Synthesise:\n  Once both sub-agents have returned, synthesise their blackboard outputs into a concise Understand Summary covering:\n    - problem_statement (≤2 sentences)\n    - top_user_needs[] (3 items, evidence-backed)\n    - design_principles[] (3 items)\n    - key_tensions[] (3 business-vs-user conflicts)\n\nStep 4 — Emit final response:\n  Call final_response(response=<your JSON synthesis>).",
+        "instructions": "You have access to route_to_sub_agent and final_response tools.\n\nIf a human reviewer has provided guidance (check the blackboard at 'understand_synthesiser.human_input'), incorporate their notes when framing the research questions and final synthesis.\n\nStep 1 — Route to problem_framer:\n  Call route_to_sub_agent(agent_id='problem_framer', reason='Deconstruct the product brief into a structured problem space.').\n\nStep 2 — Route to market_researcher:\n  After problem_framer returns, call route_to_sub_agent(agent_id='market_researcher', reason='Analyse the research context for user pain-points and market opportunities.').\n\nStep 3 — Synthesise:\n  Read 'understand_problem_framer.output' and 'understand_market_researcher.output' from the shared context and synthesise into a concise Understand Summary:\n    - problem_statement (≤2 sentences)\n    - top_user_needs[] (3 items, evidence-backed)\n    - design_principles[] (3 items)\n    - key_tensions[] (3 business-vs-user conflicts)\n\nStep 4 — Emit final response:\n  Call final_response(response=<your JSON synthesis>).",
         "model": {
           "provider": "openai",
           "model_name": "gpt-4o",
@@ -39,15 +39,18 @@
             "agent_id": "problem_framer",
             "name": "Problem Framer",
             "description": "Deconstructs the product brief into a structured problem space: goals, constraints, success metrics, and open questions.",
-            "system_prompt": "You are a senior product strategist. You receive a raw product brief and transform it into a clearly structured problem frame that will guide every downstream design decision.",
-            "instructions": "The product brief is on the blackboard under the key 'input.message'.\n\n1. Extract the core user problem and the primary business goal.\n2. Identify all explicit constraints (technical, regulatory, timeline, device, connectivity).\n3. List 3–5 measurable success metrics.\n4. Surface the top 5 open questions the design process must answer.\n5. Output a JSON object with keys: problem_statement, business_goal, constraints[], success_metrics[], open_questions[].",
+            "system_prompt": "You are a senior product strategist. You transform a raw product brief into a clearly structured problem frame that guides every downstream design decision.",
+            "instructions": "Analyse the product brief provided in the 'product_brief' field.\n\n1. Extract the core user problem and the primary business goal.\n2. Identify all explicit constraints (technical, regulatory, timeline, device, connectivity).\n3. List 3–5 measurable success metrics.\n4. Surface the top 5 open questions the design process must answer.\n5. Output a JSON object with keys: problem_statement, business_goal, constraints[], success_metrics[], open_questions[].",
             "model": {
               "provider": "openai",
               "model_name": "gpt-4o",
               "temperature": 0.15
             }
           },
-          "context_mode": "shared"
+          "context_mode": "scoped",
+          "input_mapping": {
+            "product_brief": "$.input.message"
+          }
         },
         {
           "agent": {
@@ -55,14 +58,18 @@
             "name": "Market Researcher",
             "description": "Analyses the research context and extracts competitive landscape, user pain-points, and market opportunities.",
             "system_prompt": "You are a UX research analyst. You synthesise qualitative and quantitative research data into clear, actionable insights for product and design teams.",
-            "instructions": "The research context is on the blackboard under 'input.research_context'. The product brief is at 'input.message'.\n\n1. Parse the research context for user interview themes, survey data, and competitive analysis.\n2. Identify the top 5 user pain-points with supporting evidence.\n3. Identify 3–5 market opportunities or unmet needs.\n4. Note competitor strengths/weaknesses relevant to this product.\n5. Output JSON with keys: pain_points[{description, evidence}], opportunities[], competitor_insights[], key_findings[].",
+            "instructions": "Analyse the inputs provided: 'product_brief' is the product brief, 'research_context' is the raw research data.\n\n1. Parse the research context for user interview themes, survey data, and competitive analysis.\n2. Identify the top 5 user pain-points with supporting evidence quoted from the research.\n3. Identify 3–5 market opportunities or unmet needs.\n4. Note competitor strengths/weaknesses relevant to this product.\n5. Output JSON with keys: pain_points[{description, evidence}], opportunities[], competitor_insights[], key_findings[].",
             "model": {
               "provider": "openai",
               "model_name": "gpt-4o",
               "temperature": 0.2
             }
           },
-          "context_mode": "shared"
+          "context_mode": "scoped",
+          "input_mapping": {
+            "product_brief":     "$.input.message",
+            "research_context":  "$.input.research_context"
+          }
         }
       ],
 
