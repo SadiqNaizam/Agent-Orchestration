@@ -207,6 +207,8 @@ class PensieveRunner:
                 logger.error(f"[{short}] send_message agent turn crashed: {exc}", exc_info=True)
                 await self._emit_error(f"Agent turn error: {exc}")
 
+
+
     async def approve_step(self, feedback: Optional[str] = None) -> None:
         """Called from the HTTP approve endpoint to resume a paused gate."""
         self.state.resume_from_approval({"approved": True, "feedback": feedback or ""})
@@ -314,6 +316,10 @@ class PensieveRunner:
             if collected_text:
                 self.conversation.append({"role": "assistant", "content": collected_text})
             await self.queue.put(_evt("chat_done", {}, self.state.run_id))
+            # Emit terminal sentinel only from top-level turn so the stream closes
+            if depth == 0:
+                await self.queue.put({"type": "done"})
+
 
     # ── Tool dispatch ──────────────────────────────────────────────────────────
 
@@ -422,9 +428,10 @@ class PensieveRunner:
             return {"error": f"No tool registered with name '{tool_name}'"}
 
         # Build sub-agent system prompt: base + step instructions
-        current_step_id = self.state.current_step
+        current_step_id: str = self.state.current_step or ""
         step_instr      = self.process_def.step_instructions.get(current_step_id, StepInstructions())
-        step_meta       = self.process_def.steps_by_id.get(current_step_id)
+        step_meta       = self.process_def.steps_by_id.get(current_step_id) if current_step_id else None
+
 
         sub_system = tool_entry.system_prompt
         if step_instr.context_for_sub_agent:

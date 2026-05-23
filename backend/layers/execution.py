@@ -141,100 +141,115 @@ async def run_dag(
     nodes_failed    = 0
     compaction_evts = 0
 
-    current   = "__start__"
-    loop_iters: Dict[str, int] = {}
-    step      = 0
-    MAX_STEPS = 200
+    # Each edge leaving __start__ is an independent branch.
+    # A plain linear graph has exactly one, so behaviour is unchanged.
+    # Preset fan-out produces multiple edges; we walk each branch in sequence.
+    all_start_edges = plan.adjacency.get("__start__", [])
+    if not all_start_edges:
+        return "success", 0, 0, 0
 
-    while current != "__end__" and step < MAX_STEPS:
-        step += 1
-        outgoing = plan.adjacency.get(current, [])
-        if not outgoing:
-            break
+    for branch_start_edge in all_start_edges:
 
-        # ── Select next edge + target node ───────────────────────────────────
-        next_edge, next_id = await _select_next(outgoing, blackboard, ctx, emitter, current)
-        if next_edge is None:
-            break
+        current    = "__start__"
+        loop_iters: Dict[str, int] = {}
+        step       = 0
+        MAX_STEPS  = 200
 
-        # Emit routing decision (skip for the very first hop)
-        if current != "__start__":
-            rtype = (
-                "default"       if next_edge.default else
-                "llm_router"    if next_edge.condition and next_edge.condition.type == "llm_router" else
-                "deterministic" if next_edge.condition else
-                "unconditional"
-            )
-            await emitter.routing_decision(
-                current, rtype, next_id,
-                condition_expression=(
-                    next_edge.condition.expression if next_edge.condition else None
-                ),
-            )
+        while current != "__end__" and step < MAX_STEPS:
+            step += 1
 
-        if next_id == "__end__":
-            break
+            # Restrict __start__ to this branch's single entry edge so that
+            # concurrent preset expansions each walk their own complete path.
+            if current == "__start__":
+                outgoing = [branch_start_edge]
+            else:
+                outgoing = plan.adjacency.get(current, [])
+            if not outgoing:
+                break
 
-        node = plan.nodes.get(next_id)
-        if node is None:
-            break
+            # ── Select next edge + target node ───────────────────────────────
+            next_edge, next_id = await _select_next(outgoing, blackboard, ctx, emitter, current)
+            if next_edge is None:
+                break
 
-        # ── Loop handling ─────────────────────────────────────────────────────
-        if next_edge.loop:
-            lp    = next_edge.loop
-            count = loop_iters.get(lp.loop_id, 0)
-            exit_met = (
-                count > 0 and blackboard.evaluate_condition(lp.exit_condition)
-            ) or count >= lp.max_iterations
-            await emitter.loop_iteration(
-                next_id, lp.loop_id, count + 1, lp.max_iterations, exit_met
-            )
-            if exit_met:
-                current = next_id
-                continue
-            loop_iters[lp.loop_id] = count + 1
-
-        # ── Pre-execution compaction ──────────────────────────────────────────
-        if config.compaction and config.compaction.enabled:
-            if await _maybe_compact(config.compaction, blackboard, emitter, ctx):
-                compaction_evts += 1
-
-        # ── Execute node ──────────────────────────────────────────────────────
-        policy             = _effective_policy(node, config)
-        success, fallback  = await _execute_with_policy(node, blackboard, emitter, policy, ctx)
-        blackboard.increment_step()
-
-        if success:
-            nodes_executed += 1
-            ctx.node_chain.append(next_id)
-        elif fallback:
-            # ── Fallback routing ──────────────────────────────────────────────
-            fb_node = plan.nodes.get(fallback)
-            if fb_node:
-                blackboard.write("error_context", {
-                    "failed_node": node.node_id,
-                    "timestamp":   datetime.now(timezone.utc).isoformat(),
-                })
-                fb_policy       = _effective_policy(fb_node, config)
-                fb_ok, _        = await _execute_with_policy(
-                    fb_node, blackboard, emitter, fb_policy, ctx
+            # Emit routing decision (skip for the very first hop)
+            if current != "__start__":
+                rtype = (
+                    "default"       if next_edge.default else
+                    "llm_router"    if next_edge.condition and next_edge.condition.type == "llm_router" else
+                    "deterministic" if next_edge.condition else
+                    "unconditional"
                 )
-                blackboard.increment_step()
-                if fb_ok:
-                    nodes_executed += 1
-                    ctx.node_chain.append(fallback)
-                    current = fallback
-                    continue
-            nodes_failed += 1
-            return "failure", nodes_executed, nodes_failed, compaction_evts
-        else:
-            nodes_failed += 1
-            if policy.policy == "fail":
-                return "failure", nodes_executed, nodes_failed, compaction_evts
-            elif policy.policy == "skip":
-                blackboard.write(f"{node.node_id}.output", None)
+                await emitter.routing_decision(
+                    current, rtype, next_id,
+                    condition_expression=(
+                        next_edge.condition.expression if next_edge.condition else None
+                    ),
+                )
 
-        current = next_id
+            if next_id == "__end__":
+                break
+
+            node = plan.nodes.get(next_id)
+            if node is None:
+                break
+
+            # ── Loop handling ─────────────────────────────────────────────────
+            if next_edge.loop:
+                lp    = next_edge.loop
+                count = loop_iters.get(lp.loop_id, 0)
+                exit_met = (
+                    count > 0 and blackboard.evaluate_condition(lp.exit_condition)
+                ) or count >= lp.max_iterations
+                await emitter.loop_iteration(
+                    next_id, lp.loop_id, count + 1, lp.max_iterations, exit_met
+                )
+                if exit_met:
+                    current = next_id
+                    continue
+                loop_iters[lp.loop_id] = count + 1
+
+            # ── Pre-execution compaction ──────────────────────────────────────
+            if config.compaction and config.compaction.enabled:
+                if await _maybe_compact(config.compaction, blackboard, emitter, ctx):
+                    compaction_evts += 1
+
+            # ── Execute node ──────────────────────────────────────────────────
+            policy            = _effective_policy(node, config)
+            success, fallback = await _execute_with_policy(node, blackboard, emitter, policy, ctx)
+            blackboard.increment_step()
+
+            if success:
+                nodes_executed += 1
+                ctx.node_chain.append(next_id)
+            elif fallback:
+                # ── Fallback routing ──────────────────────────────────────────
+                fb_node = plan.nodes.get(fallback)
+                if fb_node:
+                    blackboard.write("error_context", {
+                        "failed_node": node.node_id,
+                        "timestamp":   datetime.now(timezone.utc).isoformat(),
+                    })
+                    fb_policy       = _effective_policy(fb_node, config)
+                    fb_ok, _        = await _execute_with_policy(
+                        fb_node, blackboard, emitter, fb_policy, ctx
+                    )
+                    blackboard.increment_step()
+                    if fb_ok:
+                        nodes_executed += 1
+                        ctx.node_chain.append(fallback)
+                        current = fallback
+                        continue
+                nodes_failed += 1
+                return "failure", nodes_executed, nodes_failed, compaction_evts
+            else:
+                nodes_failed += 1
+                if policy.policy == "fail":
+                    return "failure", nodes_executed, nodes_failed, compaction_evts
+                elif policy.policy == "skip":
+                    blackboard.write(f"{node.node_id}.output", None)
+
+            current = next_id
 
     status = "success" if nodes_failed == 0 else "partial"
     return status, nodes_executed, nodes_failed, compaction_evts
@@ -477,6 +492,13 @@ async def _run_agent(
 
     # ── Write to blackboard ───────────────────────────────────────────────────
     out_key = f"{node.node_id}.output"
+    # Preserve routing signals (next_agent, signal) that tool execution may have
+    # already written — do not overwrite them with the plain content dict.
+    existing = blackboard.read(out_key)
+    if isinstance(existing, dict):
+        for sig_key in ("signal", "next_agent"):
+            if sig_key in existing:
+                output[sig_key] = existing[sig_key]
     blackboard.write(out_key, output)
     out_keys = [out_key]
     for bb_key in node.output_mapping:
@@ -638,13 +660,18 @@ async def _run_with_tools(
                 "content":      json.dumps(result, default=str),
             })
 
-            # After route_to_sub_agent, write routing signal for DAG conditions
+            # After route_to_sub_agent, write routing signal and exit the loop so
+            # the DAG can immediately route to the sub-agent without an extra LLM
+            # round-trip that would hallucinate "I have delegated..." and overwrite
+            # the signal on the next blackboard write in _run_agent.
             if tc.function.name == "route_to_sub_agent":
                 selected = args.get("agent_id")
                 if selected:
                     out_so_far = blackboard.read(f"{node.node_id}.output") or {}
                     out_so_far["next_agent"] = selected
                     blackboard.write(f"{node.node_id}.output", out_so_far)
+                full_content = args.get("reason", f"Routing to {selected}")
+                goto_end = True
 
         if goto_end:
             break
