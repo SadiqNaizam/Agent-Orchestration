@@ -177,6 +177,7 @@ class PensieveRunner:
         self.conversation.append({"role": "assistant", "content": greeting})
         await self._emit_chat(greeting)
         await self.queue.put(_evt("chat_done", {}, self.state.run_id))
+        await self.queue.put({"type": "done"})
 
     async def send_message(self, content: str) -> None:
         """Handle a user message. Triggers a main-agent turn."""
@@ -185,10 +186,12 @@ class PensieveRunner:
             if not self.artifacts.read("project_brief"):
                 # Try to interpret the user message as the project brief
                 self.artifacts.write("project_brief", {"description": content}, "user_input")
-                await self.artifacts  # no-op, just a comment placeholder
+
 
             self.conversation.append({"role": "user", "content": content})
             await self._run_agent_turn()
+
+
 
     async def approve_step(self, feedback: Optional[str] = None) -> None:
         """Called from the HTTP approve endpoint to resume a paused gate."""
@@ -290,6 +293,10 @@ class PensieveRunner:
             if collected_text:
                 self.conversation.append({"role": "assistant", "content": collected_text})
             await self.queue.put(_evt("chat_done", {}, self.state.run_id))
+            # Emit terminal sentinel only from top-level turn so the stream closes
+            if depth == 0:
+                await self.queue.put({"type": "done"})
+
 
     # ── Tool dispatch ──────────────────────────────────────────────────────────
 
@@ -393,9 +400,10 @@ class PensieveRunner:
             return {"error": f"No tool registered with name '{tool_name}'"}
 
         # Build sub-agent system prompt: base + step instructions
-        current_step_id = self.state.current_step
+        current_step_id: str = self.state.current_step or ""
         step_instr      = self.process_def.step_instructions.get(current_step_id, StepInstructions())
-        step_meta       = self.process_def.steps_by_id.get(current_step_id)
+        step_meta       = self.process_def.steps_by_id.get(current_step_id) if current_step_id else None
+
 
         sub_system = tool_entry.system_prompt
         if step_instr.context_for_sub_agent:
