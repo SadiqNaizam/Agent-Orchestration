@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import NodeBuilder from './components/NodeBuilder'
 import EdgeBuilder from './components/EdgeBuilder'
 import InputPanel from './components/InputPanel'
@@ -12,6 +12,26 @@ import ProcessRunner from './components/ProcessRunner'
 import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers, MessageSquare, Network, BookOpen } from 'lucide-react'
 
 const DEFAULT_BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+// ── Persist a single value to localStorage ────────────────────────────────────
+function useLocalStorage(key, defaultValue) {
+  const [value, setValue] = useState(() => {
+    try {
+      const stored = localStorage.getItem(key)
+      return stored !== null ? JSON.parse(stored) : defaultValue
+    } catch {
+      return defaultValue
+    }
+  })
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value))
+    } catch { /* quota exceeded or private-browsing — silently ignore */ }
+  }, [key, value])
+
+  return [value, setValue]
+}
 
 // ── Default orchestration config ──────────────────────────────────────────────
 const DEFAULT_CONFIG = {
@@ -127,12 +147,12 @@ export default function App() {
   // ── Orchestration config state ─────────────────────────────────────────────
   const [config, setConfig]               = useState(DEFAULT_CONFIG)
 
-  // ── Credentials & backend ──────────────────────────────────────────────────
-  const [apiKey, setApiKey]               = useState('')
-  const [apiKeyType, setApiKeyType]       = useState('openai')
-  const [azureEndpoint, setAzureEndpoint] = useState('')
-  const [azureApiVersion, setAzureApiVersion] = useState('2024-02-01')
-  const [backendUrl, setBackendUrl]       = useState(DEFAULT_BACKEND)
+  // ── Credentials & backend — persisted to localStorage ─────────────────────
+  const [apiKey, setApiKey]               = useLocalStorage('aava_api_key', '')
+  const [apiKeyType, setApiKeyType]       = useLocalStorage('aava_api_key_type', 'openai')
+  const [azureEndpoint, setAzureEndpoint] = useLocalStorage('aava_azure_endpoint', '')
+  const [azureApiVersion, setAzureApiVersion] = useLocalStorage('aava_azure_api_version', '2024-02-01')
+  const [backendUrl, setBackendUrl]       = useLocalStorage('aava_backend_url', DEFAULT_BACKEND)
 
   // ── UI state ───────────────────────────────────────────────────────────────
   const [leftTab,  setLeftTab]  = useState('nodes')
