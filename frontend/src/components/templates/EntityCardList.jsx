@@ -59,8 +59,16 @@ function PersonaCard({ persona }) {
         )}
       </div>
 
-      {/* Goals */}
-      {persona.goals?.length > 0 && (
+      {/* Scenarios (PDF section 1) */}
+      {persona.scenarios?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Scenarios</p>
+          <BulletList items={persona.scenarios} />
+        </div>
+      )}
+
+      {/* Goals (fallback when scenarios not present) */}
+      {!persona.scenarios?.length && persona.goals?.length > 0 && (
         <div>
           <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Goals</p>
           <BulletList items={persona.goals} />
@@ -82,11 +90,35 @@ function PersonaCard({ persona }) {
         </div>
       )}
 
-      {/* Behaviors */}
-      {persona.behaviors?.length > 0 && (
+      {/* Motivations (PDF section 3) */}
+      {persona.motivations?.length > 0 && (
         <div>
-          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Behaviors</p>
-          <BulletList items={persona.behaviors} />
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Motivations</p>
+          <BulletList items={persona.motivations} />
+        </div>
+      )}
+
+      {/* Expectations (PDF section 4) */}
+      {persona.expectations?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Expectations</p>
+          <BulletList items={persona.expectations} />
+        </div>
+      )}
+
+      {/* Behaviour (PDF section 5) */}
+      {(persona.behaviour || persona.behaviors)?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">Behaviour</p>
+          <BulletList items={persona.behaviour || persona.behaviors} />
+        </div>
+      )}
+
+      {/* EcoSystem (PDF section 6) */}
+      {persona.ecosystem?.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1.5">EcoSystem</p>
+          <BulletList items={persona.ecosystem} />
         </div>
       )}
 
@@ -103,7 +135,12 @@ function PersonaCard({ persona }) {
 }
 
 export default function EntityCardList({ data = [] }) {
-  if (!data.length) {
+  // Handle both flat array and wrapped formats: {personas: [...]}
+  const personas = Array.isArray(data) ? data : (data.personas || [])
+  const primaryPersona = !Array.isArray(data) ? (data.primary_persona || null) : null
+  const designImplications = !Array.isArray(data) ? (data.design_implications || []) : []
+
+  if (!personas.length) {
     return (
       <div className="flex items-center justify-center h-32 text-slate-600 text-sm">
         No personas available.
@@ -112,10 +149,35 @@ export default function EntityCardList({ data = [] }) {
   }
 
   return (
-    <div className="flex gap-4 overflow-x-auto pb-3">
-      {data.map((persona, i) => (
-        <PersonaCard key={i} persona={persona} />
-      ))}
+    <div className="flex flex-col gap-3">
+      {(primaryPersona || designImplications.length > 0) && (
+        <div className="flex flex-wrap gap-3 items-start">
+          {primaryPersona && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/30">
+              <span className="text-xs font-semibold text-indigo-400 uppercase tracking-wider">Primary:</span>
+              <span className="text-xs text-indigo-300">{primaryPersona}</span>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex gap-4 overflow-x-auto pb-3">
+        {personas.map((persona, i) => (
+          <PersonaCard key={i} persona={persona} />
+        ))}
+      </div>
+      {designImplications.length > 0 && (
+        <div className="p-3 rounded-lg bg-slate-800/40 border border-slate-700/60">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Design Implications</p>
+          <ul className="flex flex-col gap-1">
+            {designImplications.map((impl, i) => (
+              <li key={i} className="flex items-start gap-1.5 text-xs text-slate-400 leading-relaxed">
+                <span className="text-indigo-400/70 shrink-0 mt-0.5">→</span>
+                {impl}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }
