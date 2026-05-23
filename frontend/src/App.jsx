@@ -8,7 +8,8 @@ import EventViewer from './components/EventViewer'
 import PayloadPreview from './components/PayloadPreview'
 import SettingsPanel from './components/SettingsPanel'
 import GraphViewer from './components/GraphViewer'
-import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers, MessageSquare, Network } from 'lucide-react'
+import ProcessRunner from './components/ProcessRunner'
+import { Play, Square, Cpu, GitBranch, Database, Settings, Code, Activity, Layers, MessageSquare, Network, BookOpen } from 'lucide-react'
 
 const DEFAULT_BACKEND = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -120,6 +121,9 @@ function PipelineSummary({ config }) {
 }
 
 export default function App() {
+  // ── Top-level mode ─────────────────────────────────────────────────────────
+  const [appMode, setAppMode] = useState('studio')   // 'studio' | 'process'
+
   // ── Orchestration config state ─────────────────────────────────────────────
   const [config, setConfig]               = useState(DEFAULT_CONFIG)
 
@@ -265,29 +269,66 @@ export default function App() {
           <span className="text-sm font-semibold tracking-widest text-indigo-300 uppercase">
             Agent Orchestration Studio
           </span>
-          <span className="text-xs text-slate-500 font-mono ml-2">
-            {config.orchestration_id}
-          </span>
+          {appMode === 'studio' && (
+            <span className="text-xs text-slate-500 font-mono ml-2">
+              {config.orchestration_id}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-3">
-          {isRunning && jobId && (
-            <span className="text-xs text-slate-400 font-mono">job: {jobId.slice(0, 8)}…</span>
+          {/* Mode switcher */}
+          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-700">
+            <button
+              onClick={() => setAppMode('studio')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors
+                ${appMode === 'studio' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              <Cpu size={12} /> Studio
+            </button>
+            <button
+              onClick={() => setAppMode('process')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors
+                ${appMode === 'process' ? 'bg-violet-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}
+            >
+              <BookOpen size={12} /> Process
+            </button>
+          </div>
+
+          {/* Studio run button — only in studio mode */}
+          {appMode === 'studio' && (
+            <>
+              {isRunning && jobId && (
+                <span className="text-xs text-slate-400 font-mono">job: {jobId.slice(0, 8)}…</span>
+              )}
+              <button
+                onClick={isRunning ? handleStop : handleRun}
+                disabled={leftTab === 'chat' || (!config.nodes.length && !config.presets?.length)}
+                className={`flex items-center gap-2 px-4 py-1.5 rounded text-sm font-semibold transition-all
+                  ${isRunning
+                    ? 'bg-red-500/20 text-red-400 border border-red-500/40 hover:bg-red-500/30'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed'
+                  }`}
+              >
+                {isRunning ? <><Square size={14} /> Stop</> : <><Play size={14} /> Run</>}
+              </button>
+            </>
           )}
-          <button
-            onClick={isRunning ? handleStop : handleRun}
-            disabled={leftTab === 'chat' || (!config.nodes.length && !config.presets?.length)}
-            className={`flex items-center gap-2 px-4 py-1.5 rounded text-sm font-semibold transition-all
-              ${isRunning
-                ? 'bg-red-500/20 text-red-400 border border-red-500/40 hover:bg-red-500/30'
-                : 'bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed'
-              }`}
-          >
-            {isRunning ? <><Square size={14} /> Stop</> : <><Play size={14} /> Run</>}
-          </button>
         </div>
       </header>
 
-      {/* ── Main layout ── */}
+      {/* ── Process Runner mode ── */}
+      {appMode === 'process' && (
+        <ProcessRunner
+          apiKey={apiKey}
+          apiKeyType={apiKeyType}
+          azureEndpoint={azureEndpoint}
+          azureApiVersion={azureApiVersion}
+          backendUrl={backendUrl}
+        />
+      )}
+
+      {/* ── Studio mode (original layout) ── */}
+      {appMode === 'studio' && (
       <div className="flex flex-1 overflow-hidden">
 
         {/* ── Left column — ALWAYS rendered so tabs are never hidden ── */}
@@ -429,6 +470,7 @@ export default function App() {
           </div>
         )}
       </div>
+      )}
     </div>
   )
 }
