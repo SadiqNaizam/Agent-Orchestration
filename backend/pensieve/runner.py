@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import traceback
 from datetime import datetime, timezone
@@ -34,6 +35,8 @@ from pensieve.artifact_store import ArtifactStore
 from pensieve.process_parser import ProcessDefinition, StepInstructions
 from pensieve.process_state import ProcessRunState
 from pensieve.tool_registry import TOOL_REGISTRY, get as get_tool
+
+logger = logging.getLogger("pensieve.runner")
 
 
 # ── SSE envelope helpers ───────────────────────────────────────────────────────
@@ -150,45 +153,59 @@ class PensieveRunner:
 
     async def start(self) -> None:
         """Called once after creation to emit initial state and greet the user."""
-        await self._emit_state()
+        run_id = self.state.run_id
+        short  = run_id[:8]
+        logger.info(f"[{short}] Runner starting — process={self.process_def.process_id} model={self.model}")
+        try:
+            await self._emit_state()
+            logger.info(f"[{short}] Emitted initial state_update")
 
-        # Check if project_brief exists; if not, ask for it
-        brief = self.artifacts.read("project_brief")
-        if brief:
-            greeting = (
-                f"Welcome to **{self.process_def.label}**. Your project brief is loaded.\n\n"
-                f"I'll guide you through {len(self.process_def.steps)} steps across "
-                f"{len(self.process_def.phases)} phases. Let's begin with the first step: "
-                f"**{self.process_def.steps[0].label}**.\n\n"
-                "I'll generate the first output now — feel free to send me any additional "
-                "context or constraints before I run."
-            )
-        else:
-            greeting = (
-                f"Welcome to **{self.process_def.label}**.\n\n"
-                "To get started, please share your project brief. Include:\n"
-                "- Product name and description\n"
-                "- Target users\n"
-                "- Core problem you're solving\n"
-                "- Any constraints (technical, business, timeline)\n"
-                "- Competitive context if known"
-            )
+            # Check if project_brief exists; if not, ask for it
+            brief = self.artifacts.read("project_brief")
+            if brief:
+                greeting = (
+                    f"Welcome to **{self.process_def.label}**. Your project brief is loaded.\n\n"
+                    f"I'll guide you through {len(self.process_def.steps)} steps across "
+                    f"{len(self.process_def.phases)} phases. Let's begin with the first step: "
+                    f"**{self.process_def.steps[0].label}**.\n\n"
+                    "I'll generate the first output now — feel free to send me any additional "
+                    "context or constraints before I run."
+                )
+            else:
+                greeting = (
+                    f"Welcome to **{self.process_def.label}**.\n\n"
+                    "To get started, please share your project brief. Include:\n"
+                    "- Product name and description\n"
+                    "- Target users\n"
+                    "- Core problem you're solving\n"
+                    "- Any constraints (technical, business, timeline)\n"
+                    "- Competitive context if known"
+                )
 
-        self.conversation.append({"role": "assistant", "content": greeting})
-        await self._emit_chat(greeting)
-        await self.queue.put(_evt("chat_done", {}, self.state.run_id))
+            self.conversation.append({"role": "assistant", "content": greeting})
+            await self._emit_chat(greeting)
+            await self.queue.put(_evt("chat_done", {}, run_id))
+            logger.info(f"[{short}] Greeting sent (has_brief={brief is not None})")
+        except Exception as exc:
+            logger.error(f"[{short}] Runner.start() crashed: {exc}", exc_info=True)
+            await self._emit_error(f"Runner startup error: {exc}")
 
     async def send_message(self, content: str) -> None:
         """Handle a user message. Triggers a main-agent turn."""
+        short = self.state.run_id[:8]
+        logger.info(f"[{short}] User message received ({len(content)} chars)")
         async with self._lock:
             # Check if we need the project brief first
             if not self.artifacts.read("project_brief"):
-                # Try to interpret the user message as the project brief
+                logger.info(f"[{short}] No project_brief yet — treating message as brief")
                 self.artifacts.write("project_brief", {"description": content}, "user_input")
-                await self.artifacts  # no-op, just a comment placeholder
 
             self.conversation.append({"role": "user", "content": content})
-            await self._run_agent_turn()
+            try:
+                await self._run_agent_turn()
+            except Exception as exc:
+                logger.error(f"[{short}] send_message agent turn crashed: {exc}", exc_info=True)
+                await self._emit_error(f"Agent turn error: {exc}")
 
     async def approve_step(self, feedback: Optional[str] = None) -> None:
         """Called from the HTTP approve endpoint to resume a paused gate."""
@@ -198,12 +215,18 @@ class PensieveRunner:
 
     async def _run_agent_turn(self, depth: int = 0) -> None:
         """Run one LLM turn, handling streaming + tool calls recursively."""
+        short = self.state.run_id[:8]
         if depth > 10:
+            logger.error(f"[{short}] Max tool-call depth (10) reached")
             await self._emit_error("Max tool-call depth reached")
             return
 
         messages = self._build_messages()
         tools    = self._build_tools()
+        logger.info(
+            f"[{short}] LLM call depth={depth} model={self._litellm_model()} "
+            f"messages={len(messages)} tools={len(tools)} step={self.state.current_step}"
+        )
 
         try:
             response = await litellm.acompletion(
@@ -217,6 +240,7 @@ class PensieveRunner:
                 **({"api_version": self.azure_api_version} if self.azure_api_version else {}),
             )
         except Exception as exc:
+            logger.error(f"[{short}] litellm.acompletion failed: {exc}", exc_info=True)
             await self._emit_error(f"LLM error: {exc}")
             return
 
@@ -295,6 +319,9 @@ class PensieveRunner:
 
     async def _dispatch_tool(self, name: str, args: Dict) -> Dict:
         """Route tool call to backend op or sub-agent."""
+        short = self.state.run_id[:8]
+        kind  = "backend_op" if name in _BACKEND_OPS else "sub_agent"
+        logger.info(f"[{short}] Tool dispatch: {name} ({kind}) args_keys={list(args.keys())}")
         if name in _BACKEND_OPS:
             return await self._handle_backend_op(name, args)
         else:
@@ -388,8 +415,10 @@ class PensieveRunner:
 
     async def _invoke_sub_agent(self, tool_name: str, args: Dict) -> Dict:
         """Invoke a registered sub-agent tool (specialized LLM call)."""
+        short = self.state.run_id[:8]
         tool_entry = get_tool(tool_name)
         if not tool_entry:
+            logger.error(f"[{short}] Sub-agent tool '{tool_name}' not in registry")
             return {"error": f"No tool registered with name '{tool_name}'"}
 
         # Build sub-agent system prompt: base + step instructions
@@ -418,9 +447,10 @@ class PensieveRunner:
             "context_mode": "scoped",
         }, self.state.run_id))
 
+        sub_model = tool_entry.model_override or self.model
+        logger.info(f"[{short}] Sub-agent {tool_name} starting — model={self._litellm_model(sub_model)}")
         t0 = time.time()
         try:
-            sub_model = tool_entry.model_override or self.model
             response = await litellm.acompletion(
                 model=self._litellm_model(sub_model),
                 messages=[
@@ -433,6 +463,7 @@ class PensieveRunner:
                 **({"api_version": self.azure_api_version} if self.azure_api_version else {}),
             )
         except Exception as exc:
+            logger.error(f"[{short}] Sub-agent {tool_name} LLM call failed: {exc}", exc_info=True)
             await self.queue.put(_evt("error", {
                 "error_type":     "sub_agent_error",
                 "message":        str(exc),
@@ -449,19 +480,28 @@ class PensieveRunner:
             "total_tokens":      getattr(usage, "total_tokens", 0),
         } if usage else {}
 
+        logger.info(
+            f"[{short}] Sub-agent {tool_name} done — "
+            f"{duration_ms}ms tokens={token_usage.get('total_tokens', '?')} "
+            f"output_len={len(raw_content)}"
+        )
+
         # Parse JSON output
         try:
             result_data = json.loads(raw_content)
         except json.JSONDecodeError:
-            # Try to extract JSON block
+            logger.warning(f"[{short}] Sub-agent {tool_name} output is not valid JSON — attempting extraction")
             import re
             m = re.search(r'\{.*\}', raw_content, re.DOTALL)
             if m:
                 try:
                     result_data = json.loads(m.group(0))
+                    logger.info(f"[{short}] JSON extracted from raw output")
                 except Exception:
+                    logger.error(f"[{short}] JSON extraction failed — storing raw output")
                     result_data = {"raw_output": raw_content}
             else:
+                logger.error(f"[{short}] No JSON found in sub-agent output")
                 result_data = {"raw_output": raw_content}
 
         # Write artifact
@@ -469,6 +509,7 @@ class PensieveRunner:
         if artifact_key:
             version_info = self.artifacts.write(artifact_key, result_data, f"tool:{tool_name}")
             artifact_version = version_info["version"]
+            logger.info(f"[{short}] Artifact written: key={artifact_key} version={artifact_version}")
 
             # Update step state
             if current_step_id:
@@ -718,17 +759,25 @@ Each sub-agent tool accepts the consumed artifacts as input parameters.
 
     async def _emit_chat_chunk(self, content: str) -> None:
         await self.queue.put(_evt("chat_chunk", {"content": content}, self.state.run_id))
+        # Note: chat_chunk is high-frequency — only log at DEBUG to avoid noise
+        logger.debug(f"[{self.state.run_id[:8]}] → chat_chunk ({len(content)} chars)")
 
     async def _emit_chat(self, content: str) -> None:
+        logger.info(f"[{self.state.run_id[:8]}] → chat_message ({len(content)} chars)")
         await self.queue.put(_evt("chat_message", {"content": content}, self.state.run_id))
 
     async def _emit_state(self) -> None:
+        logger.info(
+            f"[{self.state.run_id[:8]}] → state_update "
+            f"phase={self.state.current_phase} step={self.state.current_step}"
+        )
         await self.queue.put(_evt("state_update", {
             "process_state": self.state.to_dict(),
             "phases":        self.state.phases_summary(),
         }, self.state.run_id))
 
     async def _emit_error(self, message: str) -> None:
+        logger.error(f"[{self.state.run_id[:8]}] → error: {message}")
         await self.queue.put(_evt("error", {
             "error_type":     "runner_error",
             "message":        message,
@@ -750,6 +799,11 @@ Each sub-agent tool accepts the consumed artifacts as input parameters.
                     break
             template_id = template_id or "generic_json"
 
+        logger.info(
+            f"[{self.state.run_id[:8]}] → artifact_update "
+            f"key={artifact_key} template={template_id} "
+            f"version={meta['version'] if meta else '?'}"
+        )
         await self.queue.put(_evt("artifact_update", {
             "artifact_key": artifact_key,
             "template_id":  template_id,
