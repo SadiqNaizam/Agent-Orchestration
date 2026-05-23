@@ -30,7 +30,10 @@ import PhaseNav from './PhaseNav'
 import ProcessChat from './ProcessChat'
 import TemplateRenderer from './TemplateRenderer'
 
-const DEFAULT_PROCESS_MD_PATH = '/ux-design-process.md'
+const PRESET_PROCESSES = [
+  { label: 'Generate UI Design (v2 — AAVA)', path: '/generate-ui-design-process.md' },
+  { label: 'Generate UI Design (v1 — Legacy)', path: '/ux-design-process.md' },
+]
 
 export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azureApiVersion, backendUrl }) {
   // ── Run state ──────────────────────────────────────────────────────────────
@@ -38,6 +41,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
   const [isRunning, setIsRunning] = useState(false)
   const [processMd, setProcessMd] = useState('')
   const [processLabel, setProcessLabel] = useState('Process Runner')
+  const [selectedPreset, setSelectedPreset] = useState(0)
 
   // ── Chat state ─────────────────────────────────────────────────────────────
   const [messages,        setMessages]        = useState([])
@@ -62,11 +66,12 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
 
   // ── Load default process.md ────────────────────────────────────────────────
   useEffect(() => {
-    fetch('/ux-design-process.md')
+    const path = PRESET_PROCESSES[selectedPreset]?.path || PRESET_PROCESSES[0].path
+    fetch(path)
       .then(r => r.ok ? r.text() : '')
       .then(text => { if (text) setProcessMd(text) })
       .catch(() => {})
-  }, [])
+  }, [selectedPreset])
 
   // ── Start a run ────────────────────────────────────────────────────────────
   const handleStart = useCallback(async () => {
@@ -264,13 +269,25 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
           )}
         </div>
         <div className="flex items-center gap-2">
+          {/* Preset selector */}
+          {!isRunning && (
+            <select
+              value={selectedPreset}
+              onChange={e => setSelectedPreset(Number(e.target.value))}
+              className="text-xs bg-slate-700 border border-slate-600 text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-indigo-500"
+            >
+              {PRESET_PROCESSES.map((p, i) => (
+                <option key={i} value={i}>{p.label}</option>
+              ))}
+            </select>
+          )}
           <input ref={fileRef} type="file" accept=".md" onChange={handleFileUpload} className="hidden" />
           <button
             onClick={() => fileRef.current?.click()}
             disabled={isRunning}
             className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors disabled:opacity-30"
           >
-            <Upload size={12} /> Load process.md
+            <Upload size={12} /> Load custom
           </button>
           <button
             onClick={isRunning ? handleStop : handleStart}

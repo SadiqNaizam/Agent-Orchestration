@@ -83,8 +83,12 @@ export default function CanvasPreview({ data = {} }) {
           }}
         >
           {screens.map((screen, i) => {
-            const elements = screen.elements
-              ? (Array.isArray(screen.elements) ? screen.elements.join('\n') : String(screen.elements))
+            // Support both screen.name and screen.screen_name
+            const screenName = screen.name || screen.screen_name || `Screen ${i + 1}`
+            // Support ascii_layout as well as elements
+            const rawElements = screen.ascii_layout || screen.elements
+            const elements = rawElements
+              ? (Array.isArray(rawElements) ? rawElements.join('\n') : String(rawElements))
               : null
 
             return (
@@ -99,12 +103,17 @@ export default function CanvasPreview({ data = {} }) {
                     <div className="w-2 h-2 rounded-full bg-amber-500/60" />
                     <div className="w-2 h-2 rounded-full bg-green-500/60" />
                   </div>
-                  <p className="text-xs font-semibold text-slate-300 truncate">{screen.name || `Screen ${i + 1}`}</p>
+                  <p className="text-xs font-semibold text-slate-300 truncate">{screenName}</p>
+                  {screen.screen_id && (
+                    <span className="text-xs font-mono text-slate-600 ml-auto shrink-0">{screen.screen_id}</span>
+                  )}
                 </div>
 
                 {/* Description */}
-                {screen.description && (
-                  <p className="text-xs text-slate-500 leading-relaxed">{screen.description}</p>
+                {(screen.description || screen.visual_description) && (
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    {screen.description || screen.visual_description}
+                  </p>
                 )}
 
                 {/* Wireframe block */}

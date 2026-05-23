@@ -80,7 +80,11 @@ function CategorySection({ category, items }) {
 }
 
 export default function CategorizedCardBoard({ data = [] }) {
-  if (!data.length) {
+  // Handle both flat array and wrapped formats: {categories: [...]}
+  const groups = Array.isArray(data) ? data : (data.categories || [])
+  const top5   = !Array.isArray(data) ? (data.prioritised_top_5 || []) : []
+
+  if (!groups.length) {
     return (
       <div className="flex items-center justify-center h-32 text-slate-600 text-sm">
         No HMW statements available.
@@ -90,7 +94,20 @@ export default function CategorizedCardBoard({ data = [] }) {
 
   return (
     <div className="flex flex-col gap-8">
-      {data.map((group, i) => (
+      {top5.length > 0 && (
+        <div className="p-3 rounded-lg bg-indigo-500/5 border border-indigo-500/20">
+          <p className="text-xs font-semibold text-indigo-400 uppercase tracking-wider mb-2">Top 5 Priorities</p>
+          <ol className="flex flex-col gap-1.5">
+            {top5.map((stmt, i) => (
+              <li key={i} className="flex items-start gap-2 text-xs text-slate-300 leading-relaxed">
+                <span className="text-indigo-400 font-semibold shrink-0 w-4">{i + 1}.</span>
+                {stmt}
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      {groups.map((group, i) => (
         <CategorySection
           key={i}
           category={group.category}
