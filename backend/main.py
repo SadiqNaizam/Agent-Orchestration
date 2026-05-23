@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -22,6 +23,12 @@ from pensieve.process_parser import parse_process_md, ProcessParseError
 from pensieve.runner import PensieveRunner
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("pensieve.api")
 
 _JOBS: dict[str, asyncio.Queue] = {}
 _SESSIONS: dict[str, ChatSession] = {}
@@ -80,17 +87,34 @@ async def orchestrate(config: OrchestrationConfig):
 
 @app.get("/api/stream/{job_id}")
 async def stream_logs(job_id: str):
+    short_id = job_id[:8]
+
+    # For Pensieve runs that have reconnected after the first SSE connection
+    # closed (EventSource auto-reconnect), the queue may already be gone from
+    # _JOBS but the runner is still alive in _PENSIEVE.  Re-register the queue
+    # so the client can resume receiving events.
     if job_id not in _JOBS:
-        raise HTTPException(status_code=404, detail="Job not found")
+        runner = _PENSIEVE.get(job_id)
+        if runner:
+            logger.info(f"[SSE] {short_id} — reconnect detected, re-registering Pensieve queue")
+            _JOBS[job_id] = runner.queue
+        else:
+            logger.warning(f"[SSE] {short_id} — 404: job not found and no Pensieve runner")
+            raise HTTPException(status_code=404, detail="Job not found")
 
     queue = _JOBS[job_id]
+    is_pensieve = job_id in _PENSIEVE
+
+    logger.info(f"[SSE] {short_id} — client connected (pensieve={is_pensieve}, queue_size={queue.qsize()})")
 
     async def event_generator():
+        events_sent = 0
         try:
             while True:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=300.0)
                 except asyncio.TimeoutError:
+                    logger.warning(f"[SSE] {short_id} — stream timeout after {events_sent} events")
                     yield "data: " + json.dumps({
                         "type": "event",
                         "data": {
@@ -100,13 +124,25 @@ async def stream_logs(job_id: str):
                     }) + "\n\n"
                     break
 
+                event_type = item.get("data", {}).get("event_type", "") if item.get("type") == "event" else item.get("type", "")
+                events_sent += 1
+                logger.info(f"[SSE] {short_id} → #{events_sent} type={item.get('type')} event={event_type}")
+
                 yield "data: " + json.dumps(item) + "\n\n"
 
                 if item.get("type") == "done":
+                    logger.info(f"[SSE] {short_id} — stream complete after {events_sent} events")
                     break
+        except Exception as exc:
+            logger.error(f"[SSE] {short_id} — generator error: {exc}", exc_info=True)
         finally:
-            _JOBS.pop(job_id, None)
-            _HITL.pop(job_id, None)
+            logger.info(f"[SSE] {short_id} — client disconnected (sent {events_sent} events)")
+            # Only clean up _JOBS for non-Pensieve runs.
+            # Pensieve runs stay in _JOBS so that EventSource auto-reconnects work.
+            # They are cleaned up when the Pensieve runner finishes or the server shuts down.
+            if job_id not in _PENSIEVE:
+                _JOBS.pop(job_id, None)
+                _HITL.pop(job_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -225,6 +261,12 @@ async def pensieve_start(req: PensieveStartRequest):
 
     # Register the queue so the stream endpoint can find it
     _JOBS[run_id] = queue
+
+    logger.info(
+        f"[PENSIEVE] run_id={run_id[:8]} process={process_def.process_id} "
+        f"steps={len(process_def.steps)} model={req.model or process_def.default_model} "
+        f"api_key_type={req.api_key_type} has_brief={req.project_brief is not None}"
+    )
 
     # Kick off the greeting in the background
     asyncio.create_task(runner.start())
