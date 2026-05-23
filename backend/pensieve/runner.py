@@ -186,6 +186,17 @@ class PensieveRunner:
             await self._emit_chat(greeting)
             await self.queue.put(_evt("chat_done", {}, run_id))
             logger.info(f"[{short}] Greeting sent (has_brief={brief is not None})")
+
+            # If a brief was provided up-front, auto-start the first step
+            # immediately — no need to wait for a user message.
+            if brief:
+                logger.info(f"[{short}] Brief present — auto-starting first agent turn")
+                self.conversation.append({
+                    "role": "user",
+                    "content": "Please begin. Start with the first step of the process.",
+                })
+                await self._run_agent_turn()
+
         except Exception as exc:
             logger.error(f"[{short}] Runner.start() crashed: {exc}", exc_info=True)
             await self._emit_error(f"Runner startup error: {exc}")
@@ -195,10 +206,12 @@ class PensieveRunner:
         short = self.state.run_id[:8]
         logger.info(f"[{short}] User message received ({len(content)} chars)")
         async with self._lock:
-            # Check if we need the project brief first
+            # If no brief exists yet, treat this message as the project brief
+            # and emit a state update so the frontend knows it's been saved.
             if not self.artifacts.read("project_brief"):
                 logger.info(f"[{short}] No project_brief yet — treating message as brief")
                 self.artifacts.write("project_brief", {"description": content}, "user_input")
+                await self._emit_state()
 
             self.conversation.append({"role": "user", "content": content})
             try:
