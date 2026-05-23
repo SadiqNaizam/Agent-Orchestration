@@ -236,7 +236,11 @@ async def pensieve_start(req: PensieveStartRequest):
         process_label=process_def.label,
         current_phase=runner.state.current_phase,
         current_step=runner.state.current_step,
+        created_at=datetime.now(timezone.utc).isoformat(),
+        message_count=0,
+        total_tokens=0,
     )
+
 
 
 @app.post("/api/pensieve/{run_id}/message")
