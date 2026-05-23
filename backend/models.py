@@ -197,6 +197,37 @@ class ChatSessionInfo(BaseModel):
     session_id: str
     agent_id: str
     agent_name: Optional[str] = None
+
+
+# ── Pensieve (Process-Driven Orchestration) ────────────────────────────────────
+
+class PensieveStartRequest(BaseModel):
+    """Start a new process run from a process.md definition."""
+    process_md: str                        # full text of the process.md file
+    project_brief: Optional[Dict[str, Any]] = None
+    model: Optional[str] = None            # overrides process default_model
+    api_key: Optional[str] = None
+    api_key_type: str = "openai"           # openai | azure | anthropic | ...
+    azure_endpoint: Optional[str] = None
+    azure_api_version: Optional[str] = "2024-02-01"
+
+
+class PensieveMessageRequest(BaseModel):
+    content: str
+
+
+class PensieveApproveRequest(BaseModel):
+    approved: bool = True
+    feedback: Optional[str] = None
+
+
+class PensieveRunInfo(BaseModel):
+    run_id: str
+    status: str
+    process_id: str
+    process_label: str
+    current_phase: Optional[str] = None
+    current_step:  Optional[str] = None
     created_at: str
     message_count: int
     total_tokens: int
