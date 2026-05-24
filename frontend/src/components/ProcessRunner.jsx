@@ -237,12 +237,25 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
     const msg = label
       ? `I select: "${label}"`
       : `I select option ${(index ?? 0) + 1}`
-    fetch(`${backendUrl}/api/pensieve/${runId}/message`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ content: msg }),
-    }).catch(() => {})
-  }, [runId, backendUrl])
+
+    if (gate) {
+      // A gate (request_approval) is blocking the runner — route the selection
+      // as an approval so wait_for_approval wakes up cleanly.
+      setGate(null)
+      fetch(`${backendUrl}/api/pensieve/${runId}/approve`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ approved: true, feedback: msg }),
+      }).catch(() => {})
+    } else {
+      // No active gate — send as a regular chat message.
+      fetch(`${backendUrl}/api/pensieve/${runId}/message`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ content: msg }),
+      }).catch(() => {})
+    }
+  }, [runId, backendUrl, gate])
 
   const handleNavigate = useCallback(async (stepId) => {
     if (!runId) return
