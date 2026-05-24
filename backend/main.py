@@ -24,10 +24,11 @@ from pensieve.runner import PensieveRunner
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+# logging.basicConfig is a no-op when uvicorn has already set up the root
+# logger. Explicitly set the level on the "pensieve" namespace so all child
+# loggers (pensieve.api, pensieve.runner) output at INFO regardless of the
+# root logger's level.
+logging.getLogger("pensieve").setLevel(logging.INFO)
 logger = logging.getLogger("pensieve.api")
 
 _JOBS: dict[str, asyncio.Queue] = {}
