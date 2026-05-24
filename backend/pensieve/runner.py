@@ -191,11 +191,12 @@ class PensieveRunner:
             # immediately — no need to wait for a user message.
             if brief:
                 logger.info(f"[{short}] Brief present — auto-starting first agent turn")
-                self.conversation.append({
-                    "role": "user",
-                    "content": "Please begin. Start with the first step of the process.",
-                })
-                await self._run_agent_turn()
+                async with self._lock:
+                    self.conversation.append({
+                        "role": "user",
+                        "content": "Please begin. Start with the first step of the process.",
+                    })
+                    await self._run_agent_turn()
 
         except Exception as exc:
             logger.error(f"[{short}] Runner.start() crashed: {exc}", exc_info=True)
