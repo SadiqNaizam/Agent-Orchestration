@@ -52,6 +52,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
   // ── Left panel state ───────────────────────────────────────────────────────
   const [currentArtifact, setCurrentArtifact] = useState(null)
   // { templateId, data, artifactKey, version }
+  const [selectedIndex, setSelectedIndex] = useState(null)
 
   // ── Phase nav state ────────────────────────────────────────────────────────
   const [phases,      setPhases]      = useState([])
@@ -179,6 +180,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
             version:     payload.version,
           })
           setGate(null)
+          setSelectedIndex(null)
         }
 
         else if (event_type === 'state_update') {
@@ -227,6 +229,20 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
     setIsRunning(false)
     setIsThinking(false)
   }, [])
+
+  // ── Left-panel selection: highlight + notify agent ─────────────────────────
+  const handleSelect = useCallback((index, label) => {
+    setSelectedIndex(index)
+    if (!runId) return
+    const msg = label
+      ? `I select: "${label}"`
+      : `I select option ${(index ?? 0) + 1}`
+    fetch(`${backendUrl}/api/pensieve/${runId}/message`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ content: msg }),
+    }).catch(() => {})
+  }, [runId, backendUrl])
 
   const handleNavigate = useCallback(async (stepId) => {
     if (!runId) return
@@ -345,6 +361,8 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
               data={currentArtifact?.data}
               stepLabel={currentStepLabel}
               stepStatus={currentStepStatus}
+              onSelect={handleSelect}
+              selectedIndex={selectedIndex}
             />
           )}
         </div>

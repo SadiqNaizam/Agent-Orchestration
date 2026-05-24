@@ -86,7 +86,7 @@ function CellContent({ type, value }) {
   }
 }
 
-export default function DataTable({ data = {} }) {
+export default function DataTable({ data = {}, onSelect, selectedIndex }) {
   const { columns = [], rows = [] } = data
 
   if (!columns.length) {
@@ -124,8 +124,11 @@ export default function DataTable({ data = {} }) {
               rows.map((row, rowIdx) => (
                 <tr
                   key={rowIdx}
-                  className={`border-b border-slate-800 hover:bg-slate-800/40 transition-colors ${
-                    rowIdx % 2 === 0 ? 'bg-slate-900' : 'bg-slate-800/20'
+                  onClick={() => onSelect?.(rowIdx, String(row[columns[0]?.key] ?? `Row ${rowIdx + 1}`))}
+                  className={`border-b border-slate-800 hover:bg-slate-800/40 transition-colors cursor-pointer ${
+                    selectedIndex === rowIdx
+                      ? 'bg-indigo-500/10 border-indigo-500/20'
+                      : rowIdx % 2 === 0 ? 'bg-slate-900' : 'bg-slate-800/20'
                   }`}
                 >
                   {columns.map(col => (

@@ -30,7 +30,7 @@ function VariantCard({ card, index, selected, onSelect }) {
 
   return (
     <div
-      onClick={() => onSelect(index)}
+      onClick={() => onSelect?.(index, card.title)}
       className={`
         relative flex flex-col gap-3 p-4 rounded-xl border-l-4 cursor-pointer transition-all
         bg-slate-800/60 border border-slate-700 hover:border-slate-600 hover:bg-slate-800

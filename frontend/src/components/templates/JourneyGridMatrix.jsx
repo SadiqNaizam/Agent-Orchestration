@@ -76,7 +76,7 @@ function StageCell({ stage, rowKey }) {
   )
 }
 
-export default function JourneyGridMatrix({ data = {} }) {
+export default function JourneyGridMatrix({ data = {}, onSelect, selectedIndex }) {
   const { persona_name, stages = [] } = data
 
   if (!stages.length) {
@@ -107,9 +107,14 @@ export default function JourneyGridMatrix({ data = {} }) {
               {stages.map((stage, i) => (
                 <th
                   key={i}
-                  className="px-3 py-2.5 text-center border border-slate-700/50 bg-slate-800 min-w-40"
+                  onClick={() => onSelect?.(i, stage.name || `Stage ${i + 1}`)}
+                  className={`px-3 py-2.5 text-center border border-slate-700/50 bg-slate-800 min-w-40 cursor-pointer hover:bg-slate-700/60 transition-colors
+                    ${selectedIndex === i ? 'bg-indigo-500/10 border-indigo-500/40' : ''}
+                  `}
                 >
-                  <span className="text-xs font-semibold text-slate-200">{stage.name || `Stage ${i + 1}`}</span>
+                  <span className={`text-xs font-semibold ${selectedIndex === i ? 'text-indigo-300' : 'text-slate-200'}`}>
+                    {stage.name || `Stage ${i + 1}`}
+                  </span>
                 </th>
               ))}
             </tr>

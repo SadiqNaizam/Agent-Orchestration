@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 
 const LEVEL_COLORS = [
@@ -17,18 +17,22 @@ function countDescendants(node) {
   return node.children.reduce((acc, child) => acc + 1 + countDescendants(child), 0)
 }
 
-function TreeNode({ node, depth = 0, defaultOpen = true }) {
+function TreeNode({ node, depth = 0, defaultOpen = true, selectedLabel, onSelectNode }) {
   const [open, setOpen] = useState(defaultOpen || depth === 0)
   const hasChildren  = node.children?.length > 0
   const descendants  = useMemo(() => countDescendants(node), [node])
   const colorCls     = levelColor(depth)
   const indentPx     = depth * 24
+  const isSelected   = selectedLabel === node.label
 
   return (
     <div className="relative">
       {/* Node row */}
       <div
-        className="flex items-start gap-2 py-1.5 group"
+        onClick={() => onSelectNode?.(node.label)}
+        className={`flex items-start gap-2 py-1.5 group cursor-pointer rounded transition-colors hover:bg-slate-800/60
+          ${isSelected ? 'bg-indigo-500/10' : ''}
+        `}
         style={{ paddingLeft: `${indentPx}px` }}
       >
         {/* Dashed connector line (for non-root nodes) */}
@@ -47,7 +51,7 @@ function TreeNode({ node, depth = 0, defaultOpen = true }) {
         <div className="shrink-0 mt-0.5">
           {hasChildren ? (
             <button
-              onClick={() => setOpen(o => !o)}
+              onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
               className="w-4 h-4 flex items-center justify-center rounded hover:bg-slate-700 transition-colors text-slate-500"
             >
               {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -62,7 +66,7 @@ function TreeNode({ node, depth = 0, defaultOpen = true }) {
         {/* Label + metadata */}
         <div className="flex flex-col gap-0.5 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className={`text-sm font-medium ${colorCls.split(' ')[0]}`}>
+            <span className={`text-sm font-medium ${isSelected ? 'text-indigo-300' : colorCls.split(' ')[0]}`}>
               {node.label}
             </span>
             {descendants > 0 && (
@@ -95,6 +99,8 @@ function TreeNode({ node, depth = 0, defaultOpen = true }) {
               node={child}
               depth={depth + 1}
               defaultOpen={depth < 1}
+              selectedLabel={selectedLabel}
+              onSelectNode={onSelectNode}
             />
           ))}
         </div>
@@ -103,8 +109,14 @@ function TreeNode({ node, depth = 0, defaultOpen = true }) {
   )
 }
 
-export default function TreeHierarchyView({ data = {} }) {
+export default function TreeHierarchyView({ data = {}, onSelect }) {
   const { root, children = [] } = data
+  const [selectedLabel, setSelectedLabel] = useState(null)
+
+  const handleSelectNode = useCallback((label) => {
+    setSelectedLabel(label)
+    onSelect?.(null, label)
+  }, [onSelect])
 
   if (!root && !children.length) {
     return (
@@ -122,7 +134,13 @@ export default function TreeHierarchyView({ data = {} }) {
 
   return (
     <div className="rounded-xl bg-slate-900 border border-slate-700 p-4 overflow-x-auto">
-      <TreeNode node={rootNode} depth={0} defaultOpen />
+      <TreeNode
+        node={rootNode}
+        depth={0}
+        defaultOpen
+        selectedLabel={selectedLabel}
+        onSelectNode={handleSelectNode}
+      />
     </div>
   )
 }

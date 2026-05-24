@@ -24,13 +24,16 @@ function BulletList({ items }) {
   )
 }
 
-function PersonaCard({ persona }) {
+function PersonaCard({ persona, index, selected, onSelect }) {
   const initial   = (persona.name || '?')[0].toUpperCase()
   const colorCls  = avatarColor(persona.name)
 
   return (
     <div
-      className="flex-none w-72 flex flex-col gap-4 p-4 rounded-xl bg-slate-800/70 border border-slate-700 hover:border-slate-600 transition-colors"
+      onClick={() => onSelect?.(index, persona.name)}
+      className={`flex-none w-72 flex flex-col gap-4 p-4 rounded-xl bg-slate-800/70 border border-slate-700 hover:border-slate-600 transition-all cursor-pointer
+        ${selected ? 'ring-2 ring-indigo-500 border-slate-600 bg-slate-800' : ''}
+      `}
     >
       {/* Header */}
       <div className="flex items-center gap-3">
@@ -134,7 +137,7 @@ function PersonaCard({ persona }) {
   )
 }
 
-export default function EntityCardList({ data = [] }) {
+export default function EntityCardList({ data = [], onSelect, selectedIndex }) {
   // Handle both flat array and wrapped formats: {personas: [...]}
   const personas = Array.isArray(data) ? data : (data.personas || [])
   const primaryPersona = !Array.isArray(data) ? (data.primary_persona || null) : null
@@ -162,7 +165,7 @@ export default function EntityCardList({ data = [] }) {
       )}
       <div className="flex gap-4 overflow-x-auto pb-3">
         {personas.map((persona, i) => (
-          <PersonaCard key={i} persona={persona} />
+          <PersonaCard key={i} persona={persona} index={i} selected={selectedIndex === i} onSelect={onSelect} />
         ))}
       </div>
       {designImplications.length > 0 && (
