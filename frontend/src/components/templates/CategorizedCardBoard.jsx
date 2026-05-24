@@ -28,9 +28,14 @@ function EffortBadge({ level }) {
   )
 }
 
-function HmwCard({ item }) {
+function HmwCard({ item, globalIndex, selected, onSelect }) {
   return (
-    <div className="flex flex-col gap-3 p-4 rounded-xl bg-slate-800/60 border border-slate-700 hover:border-slate-600 transition-colors">
+    <div
+      onClick={() => onSelect?.(globalIndex, item.hmw_statement?.substring(0, 80))}
+      className={`flex flex-col gap-3 p-4 rounded-xl bg-slate-800/60 border border-slate-700 hover:border-slate-600 transition-all cursor-pointer
+        ${selected ? 'ring-2 ring-indigo-500 border-slate-600 bg-slate-800' : ''}
+      `}
+    >
       <p className="text-sm font-medium text-slate-200 leading-snug">
         {item.hmw_statement}
       </p>
@@ -57,7 +62,7 @@ function HmwCard({ item }) {
   )
 }
 
-function CategorySection({ category, items }) {
+function CategorySection({ category, items, indexOffset, selectedIndex, onSelect }) {
   return (
     <div className="flex flex-col gap-4">
       {/* Category header */}
@@ -72,14 +77,20 @@ function CategorySection({ category, items }) {
       {/* 2-column grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {items.map((item, i) => (
-          <HmwCard key={i} item={item} />
+          <HmwCard
+            key={i}
+            item={item}
+            globalIndex={indexOffset + i}
+            selected={selectedIndex === indexOffset + i}
+            onSelect={onSelect}
+          />
         ))}
       </div>
     </div>
   )
 }
 
-export default function CategorizedCardBoard({ data = [] }) {
+export default function CategorizedCardBoard({ data = [], onSelect, selectedIndex }) {
   // Handle both flat array and wrapped formats: {categories: [...]}
   const groups = Array.isArray(data) ? data : (data.categories || [])
   const top5   = !Array.isArray(data) ? (data.prioritised_top_5 || []) : []
@@ -91,6 +102,13 @@ export default function CategorizedCardBoard({ data = [] }) {
       </div>
     )
   }
+
+  // Compute cumulative index offsets so each card has a unique global index
+  const offsets = groups.reduce((acc, group) => {
+    const prev = acc.length ? acc[acc.length - 1].end : 0
+    acc.push({ start: prev, end: prev + (group.items?.length || 0) })
+    return acc
+  }, [])
 
   return (
     <div className="flex flex-col gap-8">
@@ -112,6 +130,9 @@ export default function CategorizedCardBoard({ data = [] }) {
           key={i}
           category={group.category}
           items={group.items || []}
+          indexOffset={offsets[i]?.start ?? 0}
+          selectedIndex={selectedIndex}
+          onSelect={onSelect}
         />
       ))}
     </div>

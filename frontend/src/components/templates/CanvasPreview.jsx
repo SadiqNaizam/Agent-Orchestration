@@ -3,7 +3,7 @@ import { ZoomIn, ZoomOut, Download } from 'lucide-react'
 
 const ZOOM_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2]
 
-export default function CanvasPreview({ data = {} }) {
+export default function CanvasPreview({ data = {}, onSelect, selectedIndex }) {
   const { screens = [] } = data
   const [zoomIdx, setZoomIdx] = useState(2)   // default index = 1.0
 
@@ -94,7 +94,10 @@ export default function CanvasPreview({ data = {} }) {
             return (
               <div
                 key={i}
-                className="flex flex-col gap-2 p-3 rounded-xl bg-slate-900 border border-slate-700"
+                onClick={() => onSelect?.(i, screenName)}
+                className={`flex flex-col gap-2 p-3 rounded-xl bg-slate-900 border border-slate-700 cursor-pointer transition-all hover:border-slate-600
+                  ${selectedIndex === i ? 'ring-2 ring-indigo-500 border-slate-600' : ''}
+                `}
               >
                 {/* Screen header */}
                 <div className="flex items-center gap-2 pb-2 border-b border-slate-700/60">
