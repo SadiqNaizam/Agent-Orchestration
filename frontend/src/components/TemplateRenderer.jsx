@@ -7,6 +7,7 @@ import TreeHierarchyView    from './templates/TreeHierarchyView'
 import DataTable            from './templates/DataTable'
 import DesignTokenViewer    from './templates/DesignTokenViewer'
 import CanvasPreview        from './templates/CanvasPreview'
+import GenericJSON          from './templates/GenericJSON'
 
 // ── Template registry ─────────────────────────────────────────────────────────
 
@@ -19,6 +20,7 @@ const TEMPLATE_MAP = {
   data_table:             DataTable,
   design_token_viewer:    DesignTokenViewer,
   canvas_preview:         CanvasPreview,
+  generic_json:           GenericJSON,
 }
 
 // ── Status badge ──────────────────────────────────────────────────────────────

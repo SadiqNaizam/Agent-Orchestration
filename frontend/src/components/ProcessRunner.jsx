@@ -32,6 +32,8 @@ import TemplateRenderer from './TemplateRenderer'
 
 const PRESET_PROCESSES = [
   { label: 'Generate UI Design (v2 — AAVA)', path: '/generate-ui-design-process.md' },
+  { label: 'Feature Design Sprint (5-step)',  path: '/feature-design-sprint.md' },
+  { label: 'Startup Pitch Deck ✦ (inline tools demo)', path: '/startup-pitch-process.md' },
   { label: 'Generate UI Design (v1 — Legacy)', path: '/ux-design-process.md' },
 ]
 
