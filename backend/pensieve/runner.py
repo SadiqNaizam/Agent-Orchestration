@@ -309,7 +309,8 @@ class PensieveRunner:
 
             # Flush any streamed text to the UI so each assistant turn becomes
             # its own committed message rather than accumulating indefinitely.
-            if collected_text:
+            # Only emit if the text has real visible content (not just whitespace).
+            if collected_text.strip():
                 await self.queue.put(_evt("chat_done", {}, self.state.run_id))
 
             # Execute each tool call
