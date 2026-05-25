@@ -77,6 +77,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
 
   // ── Start a run ────────────────────────────────────────────────────────────
   const handleStart = useCallback(async () => {
+    if (isRunning) return                   // guard against double-click race
     if (!processMd.trim()) {
       alert('Please load a process.md file first.')
       return
@@ -131,8 +132,9 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
           es.close()
           esRef.current = null
           setIsRunning(false)
-          if (streamBuf) {
-            setMessages(prev => [...prev, { role: 'assistant', content: streamBuf }])
+          const trimmed = streamBuf.trim()
+          if (trimmed) {
+            setMessages(prev => [...prev, { role: 'assistant', content: trimmed }])
             setStreamingContent('')
           }
           setIsThinking(false)
@@ -149,16 +151,23 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
         }
 
         else if (event_type === 'chat_message') {
-          const content = payload.content || ''
-          setMessages(prev => [...prev, { role: 'assistant', content }])
+          const content = (payload.content || '').trim()
+          if (content) {
+            setMessages(prev => [...prev, { role: 'assistant', content }])
+          }
           setStreamingContent('')
           streamBuf = ''
           setIsThinking(false)
         }
 
         else if (event_type === 'chat_done') {
-          if (streamBuf) {
-            setMessages(prev => [...prev, { role: 'assistant', content: streamBuf }])
+          const trimmed = streamBuf.trim()
+          if (trimmed) {
+            setMessages(prev => [...prev, { role: 'assistant', content: trimmed }])
+            setStreamingContent('')
+            streamBuf = ''
+          } else if (streamBuf) {
+            // whitespace-only — clear without adding a blank bubble
             setStreamingContent('')
             streamBuf = ''
           }
