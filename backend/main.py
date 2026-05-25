@@ -303,6 +303,11 @@ async def pensieve_approve(run_id: str, req: PensieveApproveRequest):
     if not runner:
         raise HTTPException(status_code=404, detail="Run not found")
     if req.approved:
+        # Guard against duplicate approvals: if the gate event is already set
+        # (a previous call already woke wait_for_approval), silently ignore.
+        if runner.state._approval_event.is_set():
+            logger.warning(f"[PENSIEVE] run_id={run_id[:8]} duplicate approve ignored (gate already resolved)")
+            return {"status": "already_resolved", "run_id": run_id}
         await runner.approve_step(feedback=req.feedback)
     else:
         # Rejected — just send as a chat message
