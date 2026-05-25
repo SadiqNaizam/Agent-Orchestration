@@ -1,51 +1,43 @@
 """
-Process.md parser — converts a process definition markdown file into structured
-Python objects that the PensieveRunner can consume.
+Process parser — converts a process definition into structured Python objects.
 
-File format expected
-────────────────────
-  ---
-  process_id: generate_ui_design
-  version: 1.0.0
-  label: "Generate UI Design"
-  description: "..."
-  default_model: gpt-4o
-  ---
+Supports two formats:
 
-  ## State Schema
-  | Artifact Key | Type | Produced By | Description |
-  ...
+1. Single file (process.md / agent.md)
+   ─────────────────────────────────
+   The classic format: one self-contained markdown file with frontmatter,
+   state schema, phases/steps, an optional ## Tools section, and global rules.
 
-  # Phase: Understand
+2. Process pack (folder)
+   ─────────────────────
+   A directory with separated concerns:
 
-  ## Step: Problem Framing
-  - **id:** problem_framing
-  - **tool:** problem_framing
-  - **consumes:** project_brief
-  - **produces:** problem_statement
-  - **interaction:**
-    - selection_required: true
-    - review_required: true
-    - chat_enabled: true
-    - auto_advance: none
-  - **downstream_dependents:** market_analysis, user_persona
-  - **accepts_feedback_from:** none
-  - **feeds_back_to:** none
-  - **ui_template:** variant_card_grid
-  - **execution:** single
+     my-pack/
+     ├── agent.md          ← phases, steps, state schema, global rules
+     ├── tools/
+     │   ├── analyze_problem.md   ← one tool per file
+     │   └── plan_gtm.md
+     └── skills/
+         └── vc_analyst.md        ← reusable persona/expertise snippets
 
-  ### Instructions
-  #### Context for sub-agent
-  ...
-  #### Output requirements
-  ...
-  #### Quality criteria
-  ...
-  #### On user interaction
-  ...
+   Tool files: YAML frontmatter (name, description, output_key, model, skills)
+               + body = system prompt text.
 
-  ## Global Rules
-  ...
+   Skill files: YAML frontmatter (name) + body = expertise text that gets
+                prepended to any tool that lists it in `skills: [...]`.
+
+   Tool files take precedence over an inline ## Tools section in agent.md.
+   Both can coexist — agent.md ## Tools fills gaps not covered by tool files.
+
+Public API
+──────────
+  parse_process_pack(files: Dict[str, str]) -> ProcessDefinition
+      Primary entry-point. `files` maps relative paths to file contents,
+      e.g. {"agent.md": "...", "tools/analyze.md": "..."}.
+
+  parse_process_md(content: str) -> ProcessDefinition
+      Backward-compat wrapper: treats a single string as a pack with only
+      "agent.md" (or "process.md").
 """
 
 from __future__ import annotations
@@ -102,12 +94,30 @@ class StepInstructions:
 
 
 @dataclass
-class InlineToolDef:
-    """A sub-agent tool defined inline in the process.md ## Tools section."""
+class SkillDef:
+    """
+    A reusable expertise / persona snippet.
+
+    Skills are defined in skills/*.md files and referenced by tools via
+    `skills: [skill_name, ...]` in their frontmatter.  The skill's content
+    is prepended to the tool's system prompt at parse time.
+    """
     name: str
-    description: str      # shown to the orchestrator LLM in tool choice
-    output_key: str       # artifact key this tool writes (fallback if step.produces is empty)
-    system_prompt: str    # base system prompt for the sub-agent LLM
+    content: str   # raw text to prepend
+
+
+@dataclass
+class InlineToolDef:
+    """
+    A sub-agent tool whose system prompt is defined in the process pack
+    (either in a tools/*.md file or in the ## Tools section of agent.md).
+    """
+    name: str
+    description: str        # shown to the orchestrator LLM in tool choice
+    output_key: str         # artifact key this tool writes (fallback if step.produces is empty)
+    system_prompt: str      # complete system prompt (skills prepended at parse time)
+    model_override: Optional[str] = None   # overrides process default_model for this tool
+    skills: List[str] = field(default_factory=list)   # skill names that were applied
 
 
 @dataclass
@@ -121,7 +131,7 @@ class ProcessDefinition:
     steps: List[StepMetadata]
     global_rules: str
     step_instructions: Dict[str, StepInstructions]
-    inline_tools: Dict[str, InlineToolDef] = field(default_factory=dict)  # ADD THIS
+    inline_tools: Dict[str, InlineToolDef] = field(default_factory=dict)
 
     @property
     def steps_by_id(self) -> Dict[str, StepMetadata]:
@@ -150,31 +160,173 @@ class ProcessParseError(ValueError):
     pass
 
 
-# ── Public entry-point ────────────────────────────────────────────────────────
+# ── Public entry-points ────────────────────────────────────────────────────────
 
-def parse_process_md(content: str) -> ProcessDefinition:
-    """Parse a process.md string into a ProcessDefinition."""
-    header       = _parse_frontmatter(content)
-    state_schema = _parse_state_schema(content)
-    steps, instr = _parse_steps(content)
-    global_rules = _parse_global_rules(content)
-    inline_tools = _parse_tools(content)          # ADD
+def parse_process_pack(files: Dict[str, str]) -> ProcessDefinition:
+    """
+    Parse a process pack from a dict of {relative_path: file_content}.
+
+    Canonical layout::
+
+        agent.md              ← required (also accepts process.md at root)
+        tools/<name>.md       ← zero or more tool definitions
+        skills/<name>.md      ← zero or more skill snippets
+
+    Tools from files take precedence over the inline ## Tools section in agent.md
+    (both are merged; file tools win on name conflict).
+    """
+    # ── Find main orchestration file ───────────────────────────────────────────
+    # Accept agent.md, process.md, or any root-level *.md as fallback
+    main_content = (
+        files.get("agent.md") or
+        files.get("process.md") or
+        next(
+            (v for k, v in sorted(files.items())
+             if "/" not in k and k.endswith(".md")),
+            None,
+        )
+    )
+    if not main_content:
+        raise ProcessParseError(
+            "Process pack must contain agent.md (or process.md) at the root level."
+        )
+
+    # ── Parse skills ───────────────────────────────────────────────────────────
+    skills: Dict[str, SkillDef] = {}
+    for path, content in sorted(files.items()):
+        if _is_under(path, "skills") and path.endswith(".md"):
+            skill = _parse_skill_file(content, path)
+            skills[skill.name] = skill
+
+    # ── Parse tool files ───────────────────────────────────────────────────────
+    tool_files: Dict[str, InlineToolDef] = {}
+    for path, content in sorted(files.items()):
+        if _is_under(path, "tools") and path.endswith(".md"):
+            tool = _parse_tool_file(content, path, skills)
+            tool_files[tool.name] = tool
+
+    # ── Parse main orchestration file ─────────────────────────────────────────
+    header       = _parse_frontmatter(main_content)
+    state_schema = _parse_state_schema(main_content)
+    steps, instr = _parse_steps(main_content)
+    global_rules = _parse_global_rules(main_content)
+    inline_tools = _parse_tools(main_content)   # from ## Tools section
+
+    # Tool files win on name conflict (override inline ## Tools definitions)
+    merged_tools = {**inline_tools, **tool_files}
 
     return ProcessDefinition(
-        process_id=header.get("process_id", "unknown"),
-        version=str(header.get("version", "1.0.0")),
-        label=header.get("label", "Unknown Process"),
-        description=header.get("description", ""),
-        default_model=header.get("default_model", "gpt-4o"),
-        state_schema=state_schema,
-        steps=steps,
-        global_rules=global_rules,
-        step_instructions=instr,
-        inline_tools=inline_tools,               # ADD
+        process_id   = header.get("process_id", "unknown"),
+        version      = str(header.get("version", "1.0.0")),
+        label        = header.get("label", "Unknown Process"),
+        description  = header.get("description", ""),
+        default_model= header.get("default_model", "gpt-4o"),
+        state_schema = state_schema,
+        steps        = steps,
+        global_rules = global_rules,
+        step_instructions = instr,
+        inline_tools = merged_tools,
     )
 
 
-# ── Parsers ────────────────────────────────────────────────────────────────────
+def parse_process_md(content: str) -> ProcessDefinition:
+    """
+    Backward-compatible entry-point: parse a single process.md / agent.md string.
+    Delegates to parse_process_pack with a single-file virtual pack.
+    """
+    return parse_process_pack({"agent.md": content})
+
+
+# ── Tool / skill file parsers ──────────────────────────────────────────────────
+
+def _parse_tool_file(
+    content: str,
+    path: str,
+    skills: Dict[str, SkillDef],
+) -> InlineToolDef:
+    """
+    Parse a tools/*.md file.
+
+    Format::
+
+        ---
+        name: analyze_problem          # optional; derived from filename if absent
+        description: One-line summary shown to the orchestrator LLM
+        output_key: problem_analysis   # artifact key; derived from name if absent
+        model: gpt-4o-mini             # optional model override
+        skills:                        # optional list of skill names to prepend
+          - vc_analyst
+        ---
+
+        Everything after the frontmatter is the system prompt.
+        It may use any markdown formatting — the LLM receives the raw text.
+    """
+    fm, body = _split_frontmatter(content)
+
+    filename_stem = _to_snake(path.split("/")[-1].replace(".md", ""))
+    name          = _to_snake(fm.get("name", filename_stem))
+    description   = fm.get("description", f"Run the {name} step")
+    output_key    = _to_snake(fm.get("output_key", name))
+    model_override = fm.get("model") or None
+    skill_refs     = fm.get("skills") or []
+    if isinstance(skill_refs, str):
+        skill_refs = [s.strip() for s in skill_refs.split(",") if s.strip()]
+
+    # Prepend referenced skills to the system prompt
+    skill_content = "\n\n".join(
+        skills[s].content for s in skill_refs if s in skills
+    )
+    system_prompt = (skill_content + "\n\n" + body).strip() if skill_content else body.strip()
+
+    if not system_prompt:
+        system_prompt = (
+            f"You are an expert AI assistant performing the '{name}' step. "
+            "Analyze the provided input carefully and return a detailed, "
+            "well-structured JSON response."
+        )
+
+    return InlineToolDef(
+        name           = name,
+        description    = description,
+        output_key     = output_key,
+        system_prompt  = system_prompt,
+        model_override = model_override,
+        skills         = skill_refs,
+    )
+
+
+def _parse_skill_file(content: str, path: str) -> SkillDef:
+    """
+    Parse a skills/*.md file.
+
+    Format::
+
+        ---
+        name: vc_analyst    # optional; derived from filename if absent
+        ---
+
+        You are a venture capital analyst with 20 years of experience…
+        [rest of body = expertise text injected into tool prompts]
+    """
+    fm, body = _split_frontmatter(content)
+    filename_stem = _to_snake(path.split("/")[-1].replace(".md", ""))
+    name          = _to_snake(fm.get("name", filename_stem))
+    return SkillDef(name=name, content=body.strip())
+
+
+def _split_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
+    """Split a markdown file into (frontmatter_dict, body_text)."""
+    m = re.match(r'^---\s*\n(.*?)\n---\s*\n?', content, re.DOTALL)
+    if m:
+        fm   = yaml.safe_load(m.group(1)) or {}
+        body = content[m.end():]
+    else:
+        fm   = {}
+        body = content
+    return fm, body
+
+
+# ── Agent.md parsers (unchanged internals) ─────────────────────────────────────
 
 def _parse_frontmatter(content: str) -> Dict[str, Any]:
     m = re.match(r'^---\s*\n(.*?)\n---', content, re.DOTALL)
@@ -196,14 +348,13 @@ def _parse_state_schema(content: str) -> List[ArtifactDeclaration]:
         cells = [c.strip() for c in line.strip('|').split('|')]
         if len(cells) < 3:
             continue
-        # Skip header / separator rows
         if cells[0].lower() in ('artifact key', 'artifact_key') or re.match(r'^-+$', cells[0]):
             continue
         artifacts.append(ArtifactDeclaration(
-            key=cells[0],
-            type=cells[1] if len(cells) > 1 else "object",
-            produced_by=cells[2] if len(cells) > 2 else "$input",
-            description=cells[3] if len(cells) > 3 else "",
+            key         = cells[0],
+            type        = cells[1] if len(cells) > 1 else "object",
+            produced_by = cells[2] if len(cells) > 2 else "$input",
+            description = cells[3] if len(cells) > 3 else "",
         ))
     return artifacts
 
@@ -213,7 +364,7 @@ def _parse_steps(content: str) -> Tuple[List[StepMetadata], Dict[str, StepInstru
     instructions: Dict[str, StepInstructions] = {}
     order = 0
 
-    phase_pat  = re.compile(r'^# Phase:\s*(.+)$', re.MULTILINE)
+    phase_pat     = re.compile(r'^# Phase:\s*(.+)$', re.MULTILINE)
     phase_matches = list(phase_pat.finditer(content))
 
     for pi, pm in enumerate(phase_matches):
@@ -224,7 +375,7 @@ def _parse_steps(content: str) -> Tuple[List[StepMetadata], Dict[str, StepInstru
         p_end   = phase_matches[pi + 1].start() if pi + 1 < len(phase_matches) else len(content)
         p_body  = content[p_start:p_end]
 
-        step_pat    = re.compile(r'^## Step:\s*(.+)$', re.MULTILINE)
+        step_pat     = re.compile(r'^## Step:\s*(.+)$', re.MULTILINE)
         step_matches = list(step_pat.finditer(p_body))
 
         for si, sm in enumerate(step_matches):
@@ -256,7 +407,6 @@ def _parse_step_meta(
             return []
         return [x.strip() for x in v.split(',') if x.strip() and x.strip().lower() not in ("none", "n/a")]
 
-    # Interaction block  (indented bullet list under **interaction:**)
     ic = InteractionConfig()
     ib = re.search(r'\*\*interaction:\*\*\s*\n((?:[ \t]+- .+\n?)+)', body, re.MULTILINE)
     if ib:
@@ -277,20 +427,20 @@ def _parse_step_meta(
     step_id = field("id") or _to_snake(label)
 
     return StepMetadata(
-        id=step_id,
-        phase_id=phase_id,
-        phase_label=phase_label,
-        label=label,
-        tool=field("tool"),
-        consumes=lst("consumes"),
-        produces=field("produces"),
-        interaction=ic,
-        downstream_dependents=lst("downstream_dependents"),
-        accepts_feedback_from=lst("accepts_feedback_from"),
-        feeds_back_to=lst("feeds_back_to"),
-        ui_template=field("ui_template", "generic_json"),
-        execution=field("execution", "single"),
-        order=order,
+        id                    = step_id,
+        phase_id              = phase_id,
+        phase_label           = phase_label,
+        label                 = label,
+        tool                  = field("tool"),
+        consumes              = lst("consumes"),
+        produces              = field("produces"),
+        interaction           = ic,
+        downstream_dependents = lst("downstream_dependents"),
+        accepts_feedback_from = lst("accepts_feedback_from"),
+        feeds_back_to         = lst("feeds_back_to"),
+        ui_template           = field("ui_template", "generic_json"),
+        execution             = field("execution", "single"),
+        order                 = order,
     )
 
 
@@ -300,7 +450,7 @@ def _parse_step_instructions(body: str) -> StepInstructions:
     if not m:
         return instr
 
-    raw = m.group(1)
+    raw   = m.group(1)
     parts = re.split(r'\n#### ', raw)
     for part in parts:
         part = part.strip()
@@ -325,8 +475,8 @@ def _parse_global_rules(content: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-def _parse_tools(content: str) -> Dict[str, "InlineToolDef"]:
-    """Parse the optional ## Tools section for inline tool definitions."""
+def _parse_tools(content: str) -> Dict[str, InlineToolDef]:
+    """Parse the optional ## Tools section in agent.md for inline tool definitions."""
     m = re.search(r'^## Tools\s*\n(.*?)(?=\n^#[^#]|\Z)', content, re.DOTALL | re.MULTILINE)
     if not m:
         return {}
@@ -334,7 +484,7 @@ def _parse_tools(content: str) -> Dict[str, "InlineToolDef"]:
     tools_body = m.group(1)
     tools: Dict[str, InlineToolDef] = {}
 
-    tool_pat = re.compile(r'^### Tool:\s*(.+)$', re.MULTILINE)
+    tool_pat     = re.compile(r'^### Tool:\s*(.+)$', re.MULTILINE)
     tool_matches = list(tool_pat.finditer(tools_body))
 
     for ti, tm in enumerate(tool_matches):
@@ -350,7 +500,6 @@ def _parse_tools(content: str) -> Dict[str, "InlineToolDef"]:
         description = tfield("description", f"Run the {tool_name} step")
         output_key  = tfield("output_key", _to_snake(tool_name))
 
-        # System prompt is everything under `#### System Prompt` up to the next `####` or end
         sp_m = re.search(r'#### System Prompt\s*\n(.*?)(?=\n####|\Z)', t_body, re.DOTALL)
         system_prompt = sp_m.group(1).strip() if sp_m else ""
 
@@ -361,10 +510,10 @@ def _parse_tools(content: str) -> Dict[str, "InlineToolDef"]:
             )
 
         tools[tool_name] = InlineToolDef(
-            name=tool_name,
-            description=description,
-            output_key=output_key,
-            system_prompt=system_prompt,
+            name          = tool_name,
+            description   = description,
+            output_key    = output_key,
+            system_prompt = system_prompt,
         )
 
     return tools
@@ -374,3 +523,9 @@ def _parse_tools(content: str) -> Dict[str, "InlineToolDef"]:
 
 def _to_snake(s: str) -> str:
     return re.sub(r'[^a-z0-9]+', '_', s.lower()).strip('_')
+
+
+def _is_under(path: str, folder: str) -> bool:
+    """Return True if `path` is directly under `folder/`."""
+    parts = path.replace("\\", "/").split("/")
+    return len(parts) >= 2 and parts[0] == folder
