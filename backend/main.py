@@ -16,7 +16,8 @@ from layers.execution import HitlGate
 from models import (
     ChatCreateRequest, ChatMessageRequest, ChatSession, ChatSessionInfo,
     HitlResumeRequest, JobResponse, OrchestrationConfig,
-    PensieveApproveRequest, PensieveMessageRequest, PensieveRunInfo, PensieveStartRequest,
+    PensieveApproveRequest, PensieveMessageRequest, PensieveResumeRequest,
+    PensieveRunInfo, PensieveStartRequest,
 )
 from orchestrator import run_orchestration
 from pensieve.process_parser import parse_process_md, ProcessParseError
@@ -257,6 +258,7 @@ async def pensieve_start(req: PensieveStartRequest):
         azure_endpoint=req.azure_endpoint,
         azure_api_version=req.azure_api_version,
         project_brief=req.project_brief,
+        process_md=req.process_md,
     )
     _PENSIEVE[run_id] = runner
 
@@ -368,3 +370,63 @@ async def pensieve_list():
         }
         for run_id, r in _PENSIEVE.items()
     ]
+
+
+@app.post("/api/pensieve/{run_id}/resume", response_model=PensieveRunInfo)
+async def pensieve_resume(run_id: str, req: PensieveResumeRequest):
+    """
+    Resume a previously saved run after a session timeout or page reload.
+
+    If the runner is still live in memory, just re-emits state.
+    If it was lost (server restart), it restores from the save file.
+    """
+    runner = _PENSIEVE.get(run_id)
+
+    if runner is None:
+        # Try restoring from disk
+        if not PensieveRunner.saved_run_exists(run_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Run '{run_id}' not found in memory or on disk.",
+            )
+        queue: asyncio.Queue = asyncio.Queue()
+        try:
+            runner = PensieveRunner.restore(
+                run_id=run_id,
+                queue=queue,
+                api_key=req.api_key,
+                api_key_type_override=req.api_key_type,
+            )
+        except Exception as exc:
+            logger.error(f"[PENSIEVE] restore failed for {run_id[:8]}: {exc}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Failed to restore run: {exc}")
+
+        _PENSIEVE[run_id] = runner
+        _JOBS[run_id]     = queue
+        logger.info(f"[PENSIEVE] run_id={run_id[:8]} restored from disk")
+    else:
+        # Runner still live — just re-assign its queue so the new SSE
+        # connection gets the re-emitted events.
+        _JOBS[run_id] = runner.queue
+        logger.info(f"[PENSIEVE] run_id={run_id[:8]} live resume (runner already in memory)")
+
+    asyncio.create_task(runner.resume())
+
+    return PensieveRunInfo(
+        run_id=run_id,
+        status=runner.state.status,
+        process_id=runner.process_def.process_id,
+        process_label=runner.process_def.label,
+        current_phase=runner.state.current_phase,
+        current_step=runner.state.current_step,
+        created_at=runner.state.started_at,
+        message_count=len(runner.conversation),
+        total_tokens=0,
+    )
+
+
+@app.get("/api/pensieve/{run_id}/saved")
+async def pensieve_saved_check(run_id: str):
+    """Check whether a save file exists for this run_id (used by the frontend on load)."""
+    exists = PensieveRunner.saved_run_exists(run_id)
+    return {"run_id": run_id, "exists": exists}

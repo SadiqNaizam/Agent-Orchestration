@@ -231,3 +231,9 @@ class PensieveRunInfo(BaseModel):
     created_at: str
     message_count: int
     total_tokens: int
+
+
+class PensieveResumeRequest(BaseModel):
+    """Resume a previously saved run (e.g. after session timeout)."""
+    api_key: Optional[str] = None
+    api_key_type: Optional[str] = None    # if different from original (e.g. rotated key)
