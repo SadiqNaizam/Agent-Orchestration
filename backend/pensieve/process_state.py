@@ -193,6 +193,39 @@ class ProcessRunState:
     def _ordered_steps(self) -> List[StepState]:
         return [self.steps[sid] for sid in self.step_order if sid in self.steps]
 
+    @classmethod
+    def from_save_dict(cls, data: Dict) -> "ProcessRunState":
+        """Reconstruct a ProcessRunState from a to_dict() snapshot."""
+        state = cls(
+            run_id          = data["run_id"],
+            process_id      = data["process_id"],
+            process_version = data["process_version"],
+            process_label   = data["process_label"],
+        )
+        state.status        = data.get("status", "running")
+        state.current_phase = data.get("current_phase")
+        state.current_step  = data.get("current_step")
+        state.started_at    = data.get("started_at", state.started_at)
+        state.completed_at  = data.get("completed_at")
+        for step_data in data.get("steps", []):
+            ss = StepState(
+                step_id    = step_data["id"],
+                phase_id   = step_data["phase_id"],
+                phase_label= step_data["phase_label"],
+                label      = step_data["label"],
+                order      = step_data["order"],
+            )
+            ss.status           = step_data.get("status", STATUS_PENDING)
+            ss.artifact_version = step_data.get("artifact_version")
+            ss.approval_type    = step_data.get("approval_type")
+            ss.started_at       = step_data.get("started_at")
+            ss.completed_at     = step_data.get("completed_at")
+            ss.stale_reason     = step_data.get("stale_reason")
+            state.steps[step_data["id"]] = ss
+            state.step_order.append(step_data["id"])
+        # asyncio.Event is recreated fresh — gate is open on restore
+        return state
+
     def phases_summary(self) -> List[Dict]:
         """Return phases with step statuses — for phase navigation in the UI."""
         phases: Dict[str, Dict] = {}

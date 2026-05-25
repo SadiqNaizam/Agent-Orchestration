@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 import traceback
 from datetime import datetime, timezone
@@ -32,9 +33,12 @@ from typing import Any, Dict, List, Optional
 import litellm
 
 from pensieve.artifact_store import ArtifactStore
-from pensieve.process_parser import ProcessDefinition, StepInstructions
+from pensieve.process_parser import ProcessDefinition, StepInstructions, parse_process_md
 from pensieve.process_state import ProcessRunState
 from pensieve.tool_registry import TOOL_REGISTRY, get as get_tool
+
+# Directory for persisted run state. Override via PENSIEVE_SAVE_DIR env var.
+_SAVE_DIR = os.environ.get("PENSIEVE_SAVE_DIR", "/tmp/pensieve_runs")
 
 logger = logging.getLogger("pensieve.runner")
 
@@ -89,18 +93,21 @@ class PensieveRunner:
         api_key_type: str = "openai",
         azure_endpoint: Optional[str] = None,
         azure_api_version: Optional[str] = None,
+        process_md: str = "",
     ) -> None:
-        self.process_def    = process_def
-        self.state          = state
-        self.artifacts      = artifact_store
-        self.queue          = queue
-        self.model          = model
-        self.api_key        = api_key
-        self.api_key_type   = api_key_type
-        self.azure_endpoint  = azure_endpoint
+        self.process_def       = process_def
+        self.state             = state
+        self.artifacts         = artifact_store
+        self.queue             = queue
+        self.model             = model
+        self.api_key           = api_key
+        self.api_key_type      = api_key_type
+        self.azure_endpoint    = azure_endpoint
         self.azure_api_version = azure_api_version
-        self.conversation:  List[Dict] = []
-        self._lock          = asyncio.Lock()
+        self.process_md        = process_md   # stored for persistence / resume
+        self.conversation: List[Dict] = []
+        self._lock             = asyncio.Lock()
+        self._last_gate: Optional[Dict] = None   # last request_approval payload
 
     # ── Factory ────────────────────────────────────────────────────────────────
 
@@ -116,6 +123,7 @@ class PensieveRunner:
         azure_endpoint: Optional[str] = None,
         azure_api_version: Optional[str] = None,
         project_brief: Optional[Dict] = None,
+        process_md: str = "",
     ) -> "PensieveRunner":
         # Artifact store
         artifact_keys = [a.key for a in process_def.state_schema]
@@ -147,7 +155,97 @@ class PensieveRunner:
             api_key_type=api_key_type,
             azure_endpoint=azure_endpoint,
             azure_api_version=azure_api_version,
+            process_md=process_md,
         )
+
+    # ── Persistence ────────────────────────────────────────────────────────────
+
+    def save(self) -> None:
+        """Persist run state to disk (atomic write via temp file)."""
+        try:
+            os.makedirs(_SAVE_DIR, exist_ok=True)
+            save_path = os.path.join(_SAVE_DIR, f"{self.state.run_id}.json")
+            data = {
+                "run_id":       self.state.run_id,
+                "config": {
+                    "model":             self.model,
+                    "api_key_type":      self.api_key_type,
+                    "azure_endpoint":    self.azure_endpoint,
+                    "azure_api_version": self.azure_api_version,
+                },
+                "process_md":    self.process_md,
+                "conversation":  self.conversation,
+                "artifacts":     self.artifacts.to_save_dict(),
+                "process_state": self.state.to_dict(),
+                "last_gate":     self._last_gate,
+            }
+            tmp_path = save_path + ".tmp"
+            with open(tmp_path, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_path, save_path)
+            logger.info(f"[{self.state.run_id[:8]}] Run saved → {save_path}")
+        except Exception as exc:
+            logger.error(f"[{self.state.run_id[:8]}] save() failed: {exc}", exc_info=True)
+
+    @classmethod
+    def restore(
+        cls,
+        run_id: str,
+        queue: asyncio.Queue,
+        api_key: Optional[str] = None,
+        api_key_type_override: Optional[str] = None,
+    ) -> "PensieveRunner":
+        """Load a previously saved run from disk and reconstruct the runner."""
+        save_path = os.path.join(_SAVE_DIR, f"{run_id}.json")
+        with open(save_path) as f:
+            data = json.load(f)
+
+        process_md  = data.get("process_md", "")
+        process_def = parse_process_md(process_md)
+        artifacts   = ArtifactStore.from_save_dict(data["artifacts"])
+        state       = ProcessRunState.from_save_dict(data["process_state"])
+        config      = data.get("config", {})
+
+        runner = cls(
+            process_def    = process_def,
+            state          = state,
+            artifact_store = artifacts,
+            queue          = queue,
+            model          = config.get("model", "gpt-4o"),
+            api_key        = api_key,
+            api_key_type   = api_key_type_override or config.get("api_key_type", "openai"),
+            azure_endpoint    = config.get("azure_endpoint"),
+            azure_api_version = config.get("azure_api_version"),
+            process_md     = process_md,
+        )
+        runner.conversation = data.get("conversation", [])
+        runner._last_gate   = data.get("last_gate")
+        logger.info(f"[{run_id[:8]}] Run restored from {save_path}")
+        return runner
+
+    @staticmethod
+    def saved_run_exists(run_id: str) -> bool:
+        """Return True if a save file exists for this run_id."""
+        return os.path.exists(os.path.join(_SAVE_DIR, f"{run_id}.json"))
+
+    async def resume(self) -> None:
+        """Re-emit current state to a newly reconnected frontend."""
+        run_id = self.state.run_id
+        short  = run_id[:8]
+        logger.info(f"[{short}] Runner resuming — status={self.state.status}")
+
+        # Emit process state so phase nav rebuilds
+        await self._emit_state()
+
+        # Re-emit latest artifact for the current step
+        if self.state.current_step:
+            step = self.process_def.steps_by_id.get(self.state.current_step)
+            if step and self.artifacts.read(step.produces):
+                await self._push_artifact_update(step.produces, step.ui_template)
+
+        # Re-emit gate if we were paused awaiting approval
+        if self._last_gate:
+            await self.queue.put(_evt("gate", self._last_gate, run_id))
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -229,116 +327,145 @@ class PensieveRunner:
 
     # ── Main agent turn ────────────────────────────────────────────────────────
 
-    async def _run_agent_turn(self, depth: int = 0) -> None:
-        """Run one LLM turn, handling streaming + tool calls recursively."""
+    async def _run_agent_turn(self) -> None:
+        """
+        Run the main agent in an iterative loop — no recursion, no depth limit.
+
+        Continues calling the LLM and executing tool calls until either:
+          • The LLM produces a response with no tool calls (natural end of turn)
+          • request_approval blocks (gate opened — loop exits; resumes on next
+            send_message call when the user approves or sends a message)
+          • The process completes (all steps done)
+          • An error stops execution
+        """
         short = self.state.run_id[:8]
-        if depth > 25:
-            logger.error(f"[{short}] Max tool-call depth (25) reached")
-            await self._emit_error("Max tool-call depth reached")
-            return
+        iteration = 0
 
-        messages = self._build_messages()
-        tools    = self._build_tools()
-        logger.info(
-            f"[{short}] LLM call depth={depth} model={self._litellm_model()} "
-            f"messages={len(messages)} tools={len(tools)} step={self.state.current_step}"
-        )
+        while True:
+            iteration += 1
+            # Safety ceiling — very unlikely to hit in practice but prevents
+            # runaway loops if a bug causes the agent to call tools endlessly.
+            if iteration > 60:
+                logger.error(f"[{short}] Max iterations (60) reached — aborting turn")
+                await self._emit_error("Max tool-call iterations reached — run aborted.")
+                return
 
-        try:
-            response = await litellm.acompletion(
-                model=self._litellm_model(),
-                messages=messages,
-                tools=tools if tools else None,
-                tool_choice="auto" if tools else None,
-                stream=True,
-                api_key=self.api_key,
-                **({"api_base": self.azure_endpoint} if self.azure_endpoint else {}),
-                **({"api_version": self.azure_api_version} if self.azure_api_version else {}),
+            messages = self._build_messages()
+            tools    = self._build_tools()
+            logger.info(
+                f"[{short}] LLM call iter={iteration} model={self._litellm_model()} "
+                f"msgs={len(messages)} tools={len(tools)} step={self.state.current_step}"
             )
-        except Exception as exc:
-            logger.error(f"[{short}] litellm.acompletion failed: {exc}", exc_info=True)
-            await self._emit_error(f"LLM error: {exc}")
-            return
 
-        collected_text = ""
-        pending_calls: Dict[int, Dict] = {}
+            try:
+                response = await litellm.acompletion(
+                    model=self._litellm_model(),
+                    messages=messages,
+                    tools=tools if tools else None,
+                    tool_choice="auto" if tools else None,
+                    stream=True,
+                    api_key=self.api_key,
+                    **({"api_base": self.azure_endpoint} if self.azure_endpoint else {}),
+                    **({"api_version": self.azure_api_version} if self.azure_api_version else {}),
+                )
+            except Exception as exc:
+                logger.error(f"[{short}] litellm.acompletion failed: {exc}", exc_info=True)
+                await self._emit_error(f"LLM error: {exc}")
+                return
 
-        async for chunk in response:
-            choice = chunk.choices[0] if chunk.choices else None
-            if not choice:
-                continue
-            delta = choice.delta
+            collected_text = ""
+            pending_calls: Dict[int, Dict] = {}
 
-            if getattr(delta, "content", None):
-                collected_text += delta.content
-                await self._emit_chat_chunk(delta.content)
+            async for chunk in response:
+                choice = chunk.choices[0] if chunk.choices else None
+                if not choice:
+                    continue
+                delta = choice.delta
 
-            if getattr(delta, "tool_calls", None):
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in pending_calls:
-                        pending_calls[idx] = {
-                            "id":        getattr(tc, "id", None) or f"call_{idx}",
-                            "name":      "",
-                            "arguments": "",
-                        }
-                    if getattr(tc, "id", None) and not pending_calls[idx]["id"]:
-                        pending_calls[idx]["id"] = tc.id
-                    fn = getattr(tc, "function", None)
-                    if fn:
-                        if getattr(fn, "name", None):
-                            pending_calls[idx]["name"] += fn.name
-                        if getattr(fn, "arguments", None):
-                            pending_calls[idx]["arguments"] += fn.arguments
+                if getattr(delta, "content", None):
+                    collected_text += delta.content
+                    await self._emit_chat_chunk(delta.content)
 
-        # Add assistant message to history
-        if pending_calls:
-            tool_calls_list = [
-                {
-                    "id":       tc["id"],
-                    "type":     "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                }
-                for tc in pending_calls.values()
-            ]
-            self.conversation.append({
-                "role":       "assistant",
-                "content":    collected_text or None,
-                "tool_calls": tool_calls_list,
-            })
+                if getattr(delta, "tool_calls", None):
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in pending_calls:
+                            pending_calls[idx] = {
+                                "id":        getattr(tc, "id", None) or f"call_{idx}",
+                                "name":      "",
+                                "arguments": "",
+                            }
+                        if getattr(tc, "id", None) and not pending_calls[idx]["id"]:
+                            pending_calls[idx]["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn:
+                            if getattr(fn, "name", None):
+                                pending_calls[idx]["name"] += fn.name
+                            if getattr(fn, "arguments", None):
+                                pending_calls[idx]["arguments"] += fn.arguments
 
-            # Flush any streamed text to the UI so each assistant turn becomes
-            # its own committed message rather than accumulating indefinitely.
-            # Only emit if the text has real visible content (not just whitespace).
-            if collected_text.strip():
-                await self.queue.put(_evt("chat_done", {}, self.state.run_id))
-
-            # Execute each tool call
-            for tc in pending_calls.values():
-                try:
-                    args = json.loads(tc["arguments"] or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-
-                result = await self._dispatch_tool(tc["name"], args)
-
+            # ── Handle tool calls ──────────────────────────────────────────────
+            if pending_calls:
+                tool_calls_list = [
+                    {
+                        "id":       tc["id"],
+                        "type":     "function",
+                        "function": {"name": tc["name"], "arguments": tc["arguments"]},
+                    }
+                    for tc in pending_calls.values()
+                ]
                 self.conversation.append({
-                    "role":         "tool",
-                    "tool_call_id": tc["id"],
-                    "content":      json.dumps(result),
+                    "role":       "assistant",
+                    "content":    collected_text or None,
+                    "tool_calls": tool_calls_list,
                 })
 
-            # Recurse to let the agent respond after tool results
-            await self._run_agent_turn(depth=depth + 1)
+                # Flush any streaming text before executing tools
+                if collected_text.strip():
+                    await self.queue.put(_evt("chat_done", {}, self.state.run_id))
 
-        else:
-            # Final text response — no tool calls
+                # Execute each tool call; detect if a gate was opened
+                gate_opened = False
+                for tc in pending_calls.values():
+                    try:
+                        args = json.loads(tc["arguments"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    result = await self._dispatch_tool(tc["name"], args)
+
+                    self.conversation.append({
+                        "role":         "tool",
+                        "tool_call_id": tc["id"],
+                        "content":      json.dumps(result),
+                    })
+
+                    # request_approval blocks until user approves; after it returns
+                    # we stop this iteration so the lock is released and the agent
+                    # can be re-triggered by send_message / approve_step.
+                    if tc["name"] == "request_approval":
+                        gate_opened = True
+
+                if gate_opened:
+                    # Gate is now resolved (wait_for_approval returned).
+                    # Let the loop continue so the LLM can react to the approval.
+                    # (Don't return — give the agent one more turn to acknowledge.)
+                    pass
+
+                # If process completed mid-loop, stop here.
+                if self.state.is_complete():
+                    return
+
+                # Continue to next LLM iteration
+                continue
+
+            # ── No tool calls — natural end of turn ───────────────────────────
             if collected_text:
                 self.conversation.append({"role": "assistant", "content": collected_text})
             await self.queue.put(_evt("chat_done", {}, self.state.run_id))
-            # NOTE: "done" (stream close) is sent by mark_step_complete when the
-            # entire process is complete — NOT here. Pensieve streams stay open
-            # for the lifetime of the run.
+            # NOTE: "done" (stream close) is only sent by mark_step_complete
+            # when the entire process is complete — NOT here.
+            return
 
 
     # ── Tool dispatch ──────────────────────────────────────────────────────────
@@ -368,6 +495,7 @@ class PensieveRunner:
                 info = self.artifacts.write(key, data, "user_edit")
                 await self._push_artifact_update(key)
                 await self._emit_state()
+                self.save()
                 return {"success": True, **info}
 
             elif name == "mark_step_complete":
@@ -398,6 +526,8 @@ class PensieveRunner:
                     logger.info(f"[{self.state.run_id[:8]}] Auto-advanced to next step: {next_step}")
 
                 await self._emit_state()
+
+                self.save()
 
                 # Close the stream when all steps are done
                 if self.state.is_complete():
@@ -438,14 +568,19 @@ class PensieveRunner:
             elif name == "request_approval":
                 gate_type = args.get("gate_type", "review")
                 prompt    = args.get("prompt", "Please review the output and approve to continue.")
-                self.state.reset_gate()
-                await self.queue.put(_evt("gate", {
+                gate_payload = {
                     "gate_type": gate_type,
                     "prompt":    prompt,
                     "step_id":   self.state.current_step,
-                }, self.state.run_id))
+                }
+                self._last_gate = gate_payload
+                self.state.reset_gate()
+                self.save()  # persist state + gate before blocking
+                await self.queue.put(_evt("gate", gate_payload, self.state.run_id))
                 # Await human approval (blocking until HTTP endpoint resumes)
                 result = await self.state.wait_for_approval(timeout=1800)  # 30-min timeout
+                self._last_gate = None  # gate resolved
+                self.save()
                 return {
                     "approved": result.get("approved", False) if result else False,
                     "feedback": result.get("feedback", "") if result else "",
@@ -577,6 +712,7 @@ class PensieveRunner:
             template_id = step_meta.ui_template if step_meta else "generic_json"
             await self._push_artifact_update(artifact_key, template_id)
             await self._emit_state()
+            self.save()
 
             return {
                 "success":       True,

@@ -159,3 +159,32 @@ class ArtifactStore:
             for k, e in self._store.items()
             if e.current_data is not None
         }
+
+    # ── Persistence ────────────────────────────────────────────────────────────
+
+    def to_save_dict(self) -> Dict:
+        """Full serialization of all artifact entries and version history."""
+        return {
+            key: {
+                "status":       entry.status,
+                "stale_reason": entry.stale_reason,
+                "stale_since":  entry.stale_since,
+                "versions":     [v.to_dict() for v in entry.versions],
+            }
+            for key, entry in self._store.items()
+        }
+
+    @classmethod
+    def from_save_dict(cls, data: Dict) -> "ArtifactStore":
+        """Reconstruct an ArtifactStore from a to_save_dict() snapshot."""
+        store = cls(list(data.keys()))
+        for key, entry_data in data.items():
+            entry = store._store[key]
+            entry.status       = entry_data.get("status", "null")
+            entry.stale_reason = entry_data.get("stale_reason")
+            entry.stale_since  = entry_data.get("stale_since")
+            for v in entry_data.get("versions", []):
+                av            = ArtifactVersion(v["version"], v["data"], v["created_by"])
+                av.created_at = v["created_at"]
+                entry.versions.append(av)
+        return store

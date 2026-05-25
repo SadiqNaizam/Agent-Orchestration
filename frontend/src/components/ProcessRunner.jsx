@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Play, Square, Upload, ChevronDown } from 'lucide-react'
+import { Play, Square, Upload, RotateCcw } from 'lucide-react'
 import PhaseNav from './PhaseNav'
 import ProcessChat from './ProcessChat'
 import TemplateRenderer from './TemplateRenderer'
@@ -35,6 +35,8 @@ const PRESET_PROCESSES = [
   { label: 'Generate UI Design (v1 — Legacy)', path: '/ux-design-process.md' },
 ]
 
+const LS_KEY = 'pensieve_last_run'
+
 export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azureApiVersion, backendUrl }) {
   // ── Run state ──────────────────────────────────────────────────────────────
   const [runId,    setRunId]    = useState(null)
@@ -42,6 +44,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
   const [processMd, setProcessMd] = useState('')
   const [processLabel, setProcessLabel] = useState('Process Runner')
   const [selectedPreset, setSelectedPreset] = useState(0)
+  const [savedRunId, setSavedRunId] = useState(null)   // non-null = show resume banner
 
   // ── Chat state ─────────────────────────────────────────────────────────────
   const [messages,        setMessages]        = useState([])
@@ -74,6 +77,22 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
       .then(text => { if (text) setProcessMd(text) })
       .catch(() => {})
   }, [selectedPreset])
+
+  // ── Check for a resumable run in localStorage ──────────────────────────────
+  useEffect(() => {
+    const stored = localStorage.getItem(LS_KEY)
+    if (!stored) return
+    let parsed
+    try { parsed = JSON.parse(stored) } catch { return }
+    const { run_id, label } = parsed || {}
+    if (!run_id) return
+    // Confirm with the backend that the save file still exists
+    fetch(`${backendUrl}/api/pensieve/${run_id}/saved`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data?.exists) setSavedRunId({ run_id, label }) })
+      .catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Start a run ────────────────────────────────────────────────────────────
   const handleStart = useCallback(async () => {
@@ -116,7 +135,10 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
 
       const { run_id, process_label } = await res.json()
       setRunId(run_id)
+      setSavedRunId(null)
       if (process_label) setProcessLabel(process_label)
+      // Persist run_id so we can offer resume after page reload / session timeout
+      localStorage.setItem(LS_KEY, JSON.stringify({ run_id, label: process_label }))
       setShowBriefInput(false)
 
       // Open SSE stream
@@ -239,7 +261,74 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
     if (esRef.current) { esRef.current.close(); esRef.current = null }
     setIsRunning(false)
     setIsThinking(false)
+    localStorage.removeItem(LS_KEY)
+    setSavedRunId(null)
   }, [])
+
+  // ── Resume a previously saved run ─────────────────────────────────────────
+  const handleResume = useCallback(async () => {
+    if (!savedRunId) return
+    const { run_id } = savedRunId
+    setIsRunning(true)
+    setMessages([])
+    setStreamingContent('')
+    setGate(null)
+    setCurrentArtifact(null)
+    setPhases([])
+    setProcessState(null)
+
+    try {
+      const res = await fetch(`${backendUrl}/api/pensieve/${run_id}/resume`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_key:      apiKey || undefined,
+          api_key_type: apiKeyType || undefined,
+        }),
+      })
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }))
+        throw new Error(err.detail || res.statusText)
+      }
+
+      const info = await res.json()
+      setRunId(run_id)
+      setSavedRunId(null)
+      if (info.process_label) setProcessLabel(info.process_label)
+      setShowBriefInput(false)
+
+      // Re-open SSE stream — same flow as handleStart
+      const es = new EventSource(`${backendUrl}/api/stream/${run_id}`)
+      esRef.current = es
+      let streamBuf = ''
+
+      es.onmessage = (evt) => {
+        const item = JSON.parse(evt.data)
+        if (item.type === 'done') {
+          es.close(); esRef.current = null; setIsRunning(false)
+          const trimmed = streamBuf.trim()
+          if (trimmed) { setMessages(prev => [...prev, { role: 'assistant', content: trimmed }]); setStreamingContent('') }
+          setIsThinking(false); return
+        }
+        if (item.type !== 'event') return
+        const { event_type, payload } = item.data
+        if (event_type === 'chat_chunk') { streamBuf += payload.content || ''; setStreamingContent(streamBuf); setIsThinking(false) }
+        else if (event_type === 'chat_message') { const c = (payload.content || '').trim(); if (c) setMessages(prev => [...prev, { role: 'assistant', content: c }]); setStreamingContent(''); streamBuf = ''; setIsThinking(false) }
+        else if (event_type === 'chat_done') { const t = streamBuf.trim(); if (t) { setMessages(prev => [...prev, { role: 'assistant', content: t }]); setStreamingContent('') } else if (streamBuf) setStreamingContent(''); streamBuf = ''; setIsThinking(false) }
+        else if (event_type === 'node_start') setIsThinking(true)
+        else if (event_type === 'node_complete') setIsThinking(false)
+        else if (event_type === 'artifact_update') { setCurrentArtifact({ templateId: payload.template_id || 'generic_json', data: payload.data, artifactKey: payload.artifact_key, version: payload.version }); setGate(null); setSelectedIndex(null); setIsSelectionLocked(false) }
+        else if (event_type === 'state_update') { if (payload.phases) setPhases(payload.phases); if (payload.process_state) setProcessState(payload.process_state) }
+        else if (event_type === 'gate') { setGate(payload); setIsThinking(false); if (streamBuf) { setMessages(prev => [...prev, { role: 'assistant', content: streamBuf }]); setStreamingContent(''); streamBuf = '' } }
+        else if (event_type === 'error') { setIsThinking(false); setMessages(prev => [...prev, { role: 'system', content: `⚠ ${payload.error_type || 'Error'}: ${payload.message}` }]) }
+      }
+      es.onerror = () => { es.close(); esRef.current = null; setIsRunning(false); setIsThinking(false); setMessages(prev => [...prev, { role: 'system', content: 'Connection lost.' }]) }
+    } catch (err) {
+      setMessages([{ role: 'system', content: `Failed to resume: ${err.message}` }])
+      setIsRunning(false)
+    }
+  }, [savedRunId, apiKey, apiKeyType, backendUrl])
 
   // ── Left-panel selection: highlight + notify agent ─────────────────────────
   const handleSelect = useCallback((index, label) => {
@@ -300,6 +389,29 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {/* ── Resume banner ── */}
+      {savedRunId && !isRunning && (
+        <div className="flex items-center justify-between px-4 py-2 bg-indigo-900/60 border-b border-indigo-700/50 shrink-0">
+          <p className="text-xs text-indigo-200">
+            You have a saved run: <span className="font-semibold">{savedRunId.label}</span>
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={handleResume}
+              className="flex items-center gap-1.5 px-3 py-1 rounded text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+            >
+              <RotateCcw size={11} /> Resume
+            </button>
+            <button
+              onClick={() => { setSavedRunId(null); localStorage.removeItem(LS_KEY) }}
+              className="text-xs text-indigo-400 hover:text-indigo-200 transition-colors px-2"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Sub-header: process name + controls ── */}
       <div className="flex items-center justify-between px-4 py-2.5 bg-slate-800 border-b border-slate-700 shrink-0">
         <div className="flex items-center gap-3">
