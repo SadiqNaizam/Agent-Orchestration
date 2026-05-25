@@ -102,6 +102,15 @@ class StepInstructions:
 
 
 @dataclass
+class InlineToolDef:
+    """A sub-agent tool defined inline in the process.md ## Tools section."""
+    name: str
+    description: str      # shown to the orchestrator LLM in tool choice
+    output_key: str       # artifact key this tool writes (fallback if step.produces is empty)
+    system_prompt: str    # base system prompt for the sub-agent LLM
+
+
+@dataclass
 class ProcessDefinition:
     process_id: str
     version: str
@@ -112,6 +121,7 @@ class ProcessDefinition:
     steps: List[StepMetadata]
     global_rules: str
     step_instructions: Dict[str, StepInstructions]
+    inline_tools: Dict[str, InlineToolDef] = field(default_factory=dict)  # ADD THIS
 
     @property
     def steps_by_id(self) -> Dict[str, StepMetadata]:
@@ -148,6 +158,7 @@ def parse_process_md(content: str) -> ProcessDefinition:
     state_schema = _parse_state_schema(content)
     steps, instr = _parse_steps(content)
     global_rules = _parse_global_rules(content)
+    inline_tools = _parse_tools(content)          # ADD
 
     return ProcessDefinition(
         process_id=header.get("process_id", "unknown"),
@@ -159,6 +170,7 @@ def parse_process_md(content: str) -> ProcessDefinition:
         steps=steps,
         global_rules=global_rules,
         step_instructions=instr,
+        inline_tools=inline_tools,               # ADD
     )
 
 
@@ -311,6 +323,51 @@ def _parse_step_instructions(body: str) -> StepInstructions:
 def _parse_global_rules(content: str) -> str:
     m = re.search(r'^## Global Rules\s*\n(.*?)(?=\n^#[^#]|\Z)', content, re.DOTALL | re.MULTILINE)
     return m.group(1).strip() if m else ""
+
+
+def _parse_tools(content: str) -> Dict[str, "InlineToolDef"]:
+    """Parse the optional ## Tools section for inline tool definitions."""
+    m = re.search(r'^## Tools\s*\n(.*?)(?=\n^#[^#]|\Z)', content, re.DOTALL | re.MULTILINE)
+    if not m:
+        return {}
+
+    tools_body = m.group(1)
+    tools: Dict[str, InlineToolDef] = {}
+
+    tool_pat = re.compile(r'^### Tool:\s*(.+)$', re.MULTILINE)
+    tool_matches = list(tool_pat.finditer(tools_body))
+
+    for ti, tm in enumerate(tool_matches):
+        tool_name = _to_snake(tm.group(1).strip())
+        t_start   = tm.end()
+        t_end     = tool_matches[ti + 1].start() if ti + 1 < len(tool_matches) else len(tools_body)
+        t_body    = tools_body[t_start:t_end]
+
+        def tfield(name: str, default: str = "", _body: str = t_body) -> str:
+            mx = re.search(rf'\*\*{re.escape(name)}\*\*:\s*(.+)', _body)
+            return mx.group(1).strip() if mx else default
+
+        description = tfield("description", f"Run the {tool_name} step")
+        output_key  = tfield("output_key", _to_snake(tool_name))
+
+        # System prompt is everything under `#### System Prompt` up to the next `####` or end
+        sp_m = re.search(r'#### System Prompt\s*\n(.*?)(?=\n####|\Z)', t_body, re.DOTALL)
+        system_prompt = sp_m.group(1).strip() if sp_m else ""
+
+        if not system_prompt:
+            system_prompt = (
+                f"You are an expert AI assistant performing the '{tool_name}' step. "
+                "Analyze the provided input carefully and return a detailed, well-structured JSON response."
+            )
+
+        tools[tool_name] = InlineToolDef(
+            name=tool_name,
+            description=description,
+            output_key=output_key,
+            system_prompt=system_prompt,
+        )
+
+    return tools
 
 
 # ── Utilities ──────────────────────────────────────────────────────────────────

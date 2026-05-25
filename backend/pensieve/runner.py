@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 import litellm
 
 from pensieve.artifact_store import ArtifactStore
-from pensieve.process_parser import ProcessDefinition, StepInstructions, parse_process_md
+from pensieve.process_parser import InlineToolDef, ProcessDefinition, StepInstructions, parse_process_md
 from pensieve.process_state import ProcessRunState
 from pensieve.tool_registry import TOOL_REGISTRY, get as get_tool
 
@@ -596,8 +596,14 @@ class PensieveRunner:
             return {"error": str(exc), "traceback": traceback.format_exc(limit=3)}
 
     async def _invoke_sub_agent(self, tool_name: str, args: Dict) -> Dict:
-        """Invoke a registered sub-agent tool (specialized LLM call)."""
+        """Invoke a sub-agent tool — inline (process-defined) or registered (global registry)."""
         short = self.state.run_id[:8]
+
+        # Process-defined inline tools take priority over the global registry
+        inline_def = self.process_def.inline_tools.get(tool_name)
+        if inline_def:
+            return await self._invoke_inline_tool(inline_def, args)
+
         tool_entry = get_tool(tool_name)
         if not tool_entry:
             logger.error(f"[{short}] Sub-agent tool '{tool_name}' not in registry")
@@ -720,6 +726,118 @@ class PensieveRunner:
                 "version":       artifact_version,
                 "token_usage":   token_usage,
                 "duration_ms":   duration_ms,
+            }
+
+        return {"success": True, "data": result_data}
+
+    async def _invoke_inline_tool(self, idef: InlineToolDef, args: Dict) -> Dict:
+        """Execute a process-defined inline tool (no registry required)."""
+        short          = self.state.run_id[:8]
+        current_step_id = self.state.current_step or ""
+        step_meta      = self.process_def.steps_by_id.get(current_step_id) if current_step_id else None
+        step_instr     = self.process_def.step_instructions.get(current_step_id, StepInstructions())
+
+        # Build the sub-agent system prompt: inline base + step-level overrides
+        system_prompt = idef.system_prompt
+        if step_instr.context_for_sub_agent:
+            system_prompt += f"\n\n## Task Context\n{step_instr.context_for_sub_agent}"
+        if step_instr.output_requirements:
+            system_prompt += f"\n\n## Output Requirements\n{step_instr.output_requirements}"
+        if step_instr.quality_criteria:
+            system_prompt += f"\n\n## Quality Criteria\n{step_instr.quality_criteria}"
+
+        artifact_key = (step_meta.produces if step_meta else None) or idef.output_key
+
+        await self.queue.put(_evt("node_start", {
+            "agent_id":    idef.name,
+            "step_label":  step_meta.label if step_meta else idef.name,
+            "input_keys":  list(args.keys()),
+            "context_mode": "scoped",
+        }, self.state.run_id))
+
+        user_msg = (
+            "Generate the required output as valid JSON only.\n\n"
+            "Input data:\n\n" + json.dumps(args, indent=2)
+        )
+
+        logger.info(f"[{short}] Inline tool '{idef.name}' starting — model={self._litellm_model()}")
+        t0 = time.time()
+        try:
+            response = await litellm.acompletion(
+                model=self._litellm_model(),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_msg},
+                ],
+                response_format={"type": "json_object"},
+                api_key=self.api_key,
+                **({"api_base": self.azure_endpoint} if self.azure_endpoint else {}),
+                **({"api_version": self.azure_api_version} if self.azure_api_version else {}),
+            )
+        except Exception as exc:
+            logger.error(f"[{short}] Inline tool '{idef.name}' LLM call failed: {exc}", exc_info=True)
+            await self.queue.put(_evt("error", {
+                "error_type":     "tool_error",
+                "message":        str(exc),
+                "policy_applied": "fail",
+            }, self.state.run_id))
+            return {"error": str(exc)}
+
+        duration_ms = int((time.time() - t0) * 1000)
+        raw_content = response.choices[0].message.content or "{}"
+        usage       = getattr(response, "usage", None)
+        token_usage = {
+            "prompt_tokens":     getattr(usage, "prompt_tokens", 0),
+            "completion_tokens": getattr(usage, "completion_tokens", 0),
+            "total_tokens":      getattr(usage, "total_tokens", 0),
+        } if usage else {}
+
+        logger.info(
+            f"[{short}] Inline tool '{idef.name}' done — "
+            f"{duration_ms}ms tokens={token_usage.get('total_tokens', '?')}"
+        )
+
+        # Parse JSON output (same fallback logic as _invoke_sub_agent)
+        try:
+            result_data = json.loads(raw_content)
+        except json.JSONDecodeError:
+            import re as _re
+            m = _re.search(r'\{.*\}', raw_content, _re.DOTALL)
+            if m:
+                try:
+                    result_data = json.loads(m.group(0))
+                except Exception:
+                    result_data = {"raw_output": raw_content}
+            else:
+                result_data = {"raw_output": raw_content}
+
+        if artifact_key:
+            version_info     = self.artifacts.write(artifact_key, result_data, f"tool:{idef.name}")
+            artifact_version = version_info["version"]
+
+            if current_step_id:
+                self.state.set_step_in_progress(current_step_id)
+                step_state = self.state.get_step(current_step_id)
+                if step_state:
+                    step_state.artifact_version = artifact_version
+
+            await self.queue.put(_evt("node_complete", {
+                "output_keys": [artifact_key],
+                "token_usage": token_usage,
+                "duration_ms": duration_ms,
+            }, self.state.run_id))
+
+            template_id = (step_meta.ui_template if step_meta else None) or "generic_json"
+            await self._push_artifact_update(artifact_key, template_id)
+            await self._emit_state()
+            self.save()
+
+            return {
+                "success":      True,
+                "artifact_key": artifact_key,
+                "version":      artifact_version,
+                "token_usage":  token_usage,
+                "duration_ms":  duration_ms,
             }
 
         return {"success": True, "data": result_data}
@@ -931,13 +1049,50 @@ Each sub-agent tool accepts the consumed artifacts as input parameters.
             },
         ]
 
-        # All registered sub-agent tools
+        # All registered sub-agent tools (skip any that are shadowed by inline tools)
         sub_agent_tools = [
             entry.as_openai_tool()
             for entry in TOOL_REGISTRY.values()
+            if entry.name not in self.process_def.inline_tools
         ]
 
-        return backend_tools + sub_agent_tools
+        # Inline tools: schema auto-derived from which artifacts each step consumes
+        # Build a tool_name → consumed_keys map across all steps
+        inline_consumes: Dict[str, List[str]] = {}
+        for step in self.process_def.steps:
+            if step.tool in self.process_def.inline_tools:
+                if step.tool not in inline_consumes:
+                    inline_consumes[step.tool] = []
+                for key in step.consumes:
+                    if key not in inline_consumes[step.tool]:
+                        inline_consumes[step.tool].append(key)
+
+        inline_tool_defs: List[Dict] = []
+        for tool_name, idef in self.process_def.inline_tools.items():
+            consumed_keys = inline_consumes.get(tool_name, [])
+            props: Dict[str, Any] = {}
+            for key in consumed_keys:
+                artifact_decl = self.process_def.artifact_schema_by_key.get(key)
+                desc = artifact_decl.description if artifact_decl else f"The {key} artifact"
+                props[key] = {"type": "object", "description": desc}
+            props["additional_context"] = {
+                "type": "string",
+                "description": "Optional extra instructions or modification notes for this generation",
+            }
+            inline_tool_defs.append({
+                "type": "function",
+                "function": {
+                    "name":        tool_name,
+                    "description": idef.description,
+                    "parameters": {
+                        "type":       "object",
+                        "properties": props,
+                        "required":   list(consumed_keys),
+                    },
+                },
+            })
+
+        return backend_tools + sub_agent_tools + inline_tool_defs
 
     # ── Emit helpers ───────────────────────────────────────────────────────────
 
