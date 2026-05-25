@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { Send, CheckCircle, AlertCircle, Eye, Loader2 } from 'lucide-react'
+import { Send, CheckCircle, AlertCircle, Eye, Loader2, ChevronDown, ChevronUp } from 'lucide-react'
 
 // ── Simple markdown renderer (bold + code only) ────────────────────────────────
 function renderMarkdown(text) {
@@ -101,10 +101,14 @@ function GateCard({ gate, onApprove, onSendFeedback, isApproving }) {
   )
 }
 
+const COLLAPSE_THRESHOLD = 320   // chars — assistant messages longer than this get a toggle
+
 // ── Message bubble ─────────────────────────────────────────────────────────────
 function MessageBubble({ msg, isStreaming }) {
-  const isUser = msg.role === 'user'
+  const isUser   = msg.role === 'user'
   const isSystem = msg.role === 'system'
+  const isLong   = !isUser && !isStreaming && (msg.content?.length ?? 0) > COLLAPSE_THRESHOLD
+  const [expanded, setExpanded] = useState(false)
 
   if (isSystem) {
     return (
@@ -113,6 +117,10 @@ function MessageBubble({ msg, isStreaming }) {
       </div>
     )
   }
+
+  const displayContent = isLong && !expanded
+    ? msg.content.slice(0, COLLAPSE_THRESHOLD - 20) + '…'
+    : msg.content
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} px-3 mb-2`}>
@@ -123,9 +131,20 @@ function MessageBubble({ msg, isStreaming }) {
             : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-bl-sm'
           }`}
       >
-        {renderMarkdown(msg.content)}
+        {renderMarkdown(displayContent)}
         {isStreaming && (
           <span className="inline-block w-1.5 h-3 bg-indigo-400 ml-0.5 animate-pulse align-middle" />
+        )}
+        {isLong && (
+          <button
+            onClick={() => setExpanded(e => !e)}
+            className="flex items-center gap-0.5 mt-1.5 text-[10px] text-slate-500 hover:text-slate-300 transition-colors"
+          >
+            {expanded
+              ? <><ChevronUp size={10} /> Show less</>
+              : <><ChevronDown size={10} /> Show more</>
+            }
+          </button>
         )}
       </div>
     </div>

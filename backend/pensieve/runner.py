@@ -232,8 +232,8 @@ class PensieveRunner:
     async def _run_agent_turn(self, depth: int = 0) -> None:
         """Run one LLM turn, handling streaming + tool calls recursively."""
         short = self.state.run_id[:8]
-        if depth > 10:
-            logger.error(f"[{short}] Max tool-call depth (10) reached")
+        if depth > 25:
+            logger.error(f"[{short}] Max tool-call depth (25) reached")
             await self._emit_error("Max tool-call depth reached")
             return
 
@@ -307,6 +307,11 @@ class PensieveRunner:
                 "tool_calls": tool_calls_list,
             })
 
+            # Flush any streamed text to the UI so each assistant turn becomes
+            # its own committed message rather than accumulating indefinitely.
+            if collected_text:
+                await self.queue.put(_evt("chat_done", {}, self.state.run_id))
+
             # Execute each tool call
             for tc in pending_calls.values():
                 try:
@@ -330,9 +335,9 @@ class PensieveRunner:
             if collected_text:
                 self.conversation.append({"role": "assistant", "content": collected_text})
             await self.queue.put(_evt("chat_done", {}, self.state.run_id))
-            # Emit terminal sentinel only from top-level turn so the stream closes
-            if depth == 0:
-                await self.queue.put({"type": "done"})
+            # NOTE: "done" (stream close) is sent by mark_step_complete when the
+            # entire process is complete — NOT here. Pensieve streams stay open
+            # for the lifetime of the run.
 
 
     # ── Tool dispatch ──────────────────────────────────────────────────────────
@@ -381,8 +386,29 @@ class PensieveRunner:
                                 self.process_def.steps_by_id[dep].produces if dep in self.process_def.steps_by_id else "",
                                 f"{step.produces} was updated after this artifact was generated",
                             )
+
+                # Auto-advance current_step to the next pending step so the
+                # system prompt on the next LLM turn reflects the correct step.
+                # Without this, the agent sees the completed step as "current"
+                # and re-runs its tool.
+                next_step = self.state.next_pending_step()
+                if next_step:
+                    self.state.navigate_to(next_step)
+                    logger.info(f"[{self.state.run_id[:8]}] Auto-advanced to next step: {next_step}")
+
                 await self._emit_state()
-                return {"success": True, "step_id": step_id, "status": "completed"}
+
+                # Close the stream when all steps are done
+                if self.state.is_complete():
+                    self.state.status = "completed"
+                    await self._emit_state()
+                    await self.queue.put(_evt("process_complete", {
+                        "message": "All steps completed successfully.",
+                    }, self.state.run_id))
+                    await self.queue.put({"type": "done"})
+
+                return {"success": True, "step_id": step_id, "status": "completed",
+                        "next_step": next_step or "all_complete"}
 
             elif name == "mark_artifact_stale":
                 key    = args.get("artifact_key", "")
@@ -847,17 +873,32 @@ Each sub-agent tool accepts the consumed artifacts as input parameters.
 
 DEFAULT_GLOBAL_RULES = """
 ### Step Execution Protocol
-1. Verify all consumed artifacts exist and are not stale before invoking a tool.
-2. Invoke the step's registered tool with consumed artifacts as input.
+1. Check the artifact store: if the current step's artifact already exists AND is not stale,
+   skip invoking the tool — go directly to emit_artifact_to_ui and request_approval.
+2. Otherwise invoke the step's registered tool with consumed artifacts as input.
 3. After tool completes: call emit_artifact_to_ui to show results.
-4. If selection_required: request_approval(gate_type="selection", ...) and wait.
-5. If review_required: request_approval(gate_type="review", ...) and wait.
-6. On user approval: call mark_step_complete, then proceed to the next step.
+4. If selection_required: call request_approval(gate_type="selection", ...) and wait.
+5. If review_required: call request_approval(gate_type="review", ...) and wait.
+6. On any approval: call mark_step_complete(step_id=<current_step_id>).
+   The system will automatically advance current_step to the next pending step.
+   Then immediately proceed to execute that new step's tool.
+
+### Selection Gate Protocol (gate_type="selection")
+When request_approval returns {"approved": true, "feedback": "I select: \"...\""} or similar:
+1. Write ONE short sentence acknowledging the choice.
+2. Call mark_step_complete(step_id=<current_step_id>) — this advances current_step.
+3. Immediately run the NEW current step's tool. Do not pause or ask for confirmation.
+CRITICAL: Do NOT re-invoke the just-completed step's tool. Selection = approval to advance.
+
+### After mark_step_complete
+- current_step is automatically updated to the next pending step by the system.
+- You will see the new step in the system prompt on the next tool call.
+- Never call the completed step's tool again unless explicitly asked by the user.
 
 ### Edit Handling
 - Minor edit (field change): use write_artifact to update the artifact directly.
 - Structural edit (add/remove/restructure): re-invoke the step's tool with edit instructions.
-- After any edit: propagate staleness via mark_step_complete (which handles downstream).
+- After any edit: call mark_step_complete to propagate staleness downstream.
 
 ### Backward Navigation
 - When user asks to go back: call navigate_to_step with the target step ID.
@@ -866,7 +907,7 @@ DEFAULT_GLOBAL_RULES = """
 
 ### Communication Style
 - Be concise — the artifact is shown on the left; don't repeat it in chat.
-- Announce what you're about to do before invoking a tool.
-- After approval, briefly confirm and announce the next step.
+- Announce what you're about to do before invoking a tool (one sentence).
+- After each approval, write ONE sentence confirming then immediately proceed.
 - If a consumed artifact is stale, warn the user and ask whether to regenerate.
 """

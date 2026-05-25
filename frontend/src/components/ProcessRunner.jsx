@@ -53,6 +53,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
   const [currentArtifact, setCurrentArtifact] = useState(null)
   // { templateId, data, artifactKey, version }
   const [selectedIndex, setSelectedIndex] = useState(null)
+  const [isSelectionLocked, setIsSelectionLocked] = useState(false)
 
   // ── Phase nav state ────────────────────────────────────────────────────────
   const [phases,      setPhases]      = useState([])
@@ -181,6 +182,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
           })
           setGate(null)
           setSelectedIndex(null)
+          setIsSelectionLocked(false)      // new artifact — allow fresh selection
         }
 
         else if (event_type === 'state_update') {
@@ -232,7 +234,9 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
 
   // ── Left-panel selection: highlight + notify agent ─────────────────────────
   const handleSelect = useCallback((index, label) => {
+    if (isSelectionLocked) return          // ignore duplicate clicks
     setSelectedIndex(index)
+    setIsSelectionLocked(true)             // lock immediately — one selection per artifact
     if (!runId) return
     const msg = label
       ? `I select: "${label}"`
@@ -255,7 +259,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
         body:    JSON.stringify({ content: msg }),
       }).catch(() => {})
     }
-  }, [runId, backendUrl, gate])
+  }, [runId, backendUrl, gate, isSelectionLocked])
 
   const handleNavigate = useCallback(async (stepId) => {
     if (!runId) return
@@ -376,6 +380,7 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
               stepStatus={currentStepStatus}
               onSelect={handleSelect}
               selectedIndex={selectedIndex}
+              isLocked={isSelectionLocked}
             />
           )}
         </div>

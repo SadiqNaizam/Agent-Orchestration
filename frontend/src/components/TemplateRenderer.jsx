@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle, Clock, Loader, RefreshCw } from 'lucide-react'
+import { AlertCircle, CheckCircle, Clock, Loader, RefreshCw, CheckCircle2 } from 'lucide-react'
 import VariantCardGrid      from './templates/VariantCardGrid'
 import EntityCardList       from './templates/EntityCardList'
 import JourneyGridMatrix    from './templates/JourneyGridMatrix'
@@ -109,6 +109,7 @@ export default function TemplateRenderer({
   data,
   onSelect,
   selectedIndex,
+  isLocked,
   stepLabel,
   stepStatus,
 }) {
@@ -123,11 +124,17 @@ export default function TemplateRenderer({
             <h2 className="text-sm font-semibold text-slate-200">{stepLabel}</h2>
           )}
           <StatusBadge status={stepStatus} />
+          {isLocked && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border bg-indigo-500/20 text-indigo-400 border-indigo-500/30 ml-auto">
+              <CheckCircle2 size={10} />
+              Selection sent
+            </span>
+          )}
         </div>
       )}
 
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      {/* Content — pointer-events disabled while locked to prevent double-clicks */}
+      <div className={`flex-1 overflow-y-auto min-h-0 transition-opacity ${isLocked ? 'opacity-60 pointer-events-none' : ''}`}>
         {data == null ? (
           <LoadingSkeleton />
         ) : TemplateComponent ? (
