@@ -33,7 +33,7 @@ from typing import Any, Dict, List, Optional
 import litellm
 
 from pensieve.artifact_store import ArtifactStore
-from pensieve.process_parser import InlineToolDef, ProcessDefinition, StepInstructions, parse_process_md
+from pensieve.process_parser import InlineToolDef, ProcessDefinition, StepInstructions, parse_process_md, parse_process_pack
 from pensieve.process_state import ProcessRunState
 from pensieve.tool_registry import TOOL_REGISTRY, get as get_tool
 
@@ -94,19 +94,21 @@ class PensieveRunner:
         azure_endpoint: Optional[str] = None,
         azure_api_version: Optional[str] = None,
         process_md: str = "",
+        process_pack_files: Optional[Dict[str, str]] = None,
     ) -> None:
-        self.process_def       = process_def
-        self.state             = state
-        self.artifacts         = artifact_store
-        self.queue             = queue
-        self.model             = model
-        self.api_key           = api_key
-        self.api_key_type      = api_key_type
-        self.azure_endpoint    = azure_endpoint
-        self.azure_api_version = azure_api_version
-        self.process_md        = process_md   # stored for persistence / resume
+        self.process_def        = process_def
+        self.state              = state
+        self.artifacts          = artifact_store
+        self.queue              = queue
+        self.model              = model
+        self.api_key            = api_key
+        self.api_key_type       = api_key_type
+        self.azure_endpoint     = azure_endpoint
+        self.azure_api_version  = azure_api_version
+        self.process_md         = process_md          # for single-file backward compat
+        self.process_pack_files = process_pack_files  # for process-pack persistence
         self.conversation: List[Dict] = []
-        self._lock             = asyncio.Lock()
+        self._lock              = asyncio.Lock()
         self._last_gate: Optional[Dict] = None   # last request_approval payload
 
     # ── Factory ────────────────────────────────────────────────────────────────
@@ -124,6 +126,7 @@ class PensieveRunner:
         azure_api_version: Optional[str] = None,
         project_brief: Optional[Dict] = None,
         process_md: str = "",
+        process_pack_files: Optional[Dict[str, str]] = None,
     ) -> "PensieveRunner":
         # Artifact store
         artifact_keys = [a.key for a in process_def.state_schema]
@@ -146,16 +149,17 @@ class PensieveRunner:
         effective_model = model or process_def.default_model
 
         return cls(
-            process_def=process_def,
-            state=state,
-            artifact_store=store,
-            queue=queue,
-            model=effective_model,
-            api_key=api_key,
-            api_key_type=api_key_type,
-            azure_endpoint=azure_endpoint,
-            azure_api_version=azure_api_version,
-            process_md=process_md,
+            process_def        = process_def,
+            state              = state,
+            artifact_store     = store,
+            queue              = queue,
+            model              = effective_model,
+            api_key            = api_key,
+            api_key_type       = api_key_type,
+            azure_endpoint     = azure_endpoint,
+            azure_api_version  = azure_api_version,
+            process_md         = process_md,
+            process_pack_files = process_pack_files,
         )
 
     # ── Persistence ────────────────────────────────────────────────────────────
@@ -173,11 +177,13 @@ class PensieveRunner:
                     "azure_endpoint":    self.azure_endpoint,
                     "azure_api_version": self.azure_api_version,
                 },
-                "process_md":    self.process_md,
-                "conversation":  self.conversation,
-                "artifacts":     self.artifacts.to_save_dict(),
-                "process_state": self.state.to_dict(),
-                "last_gate":     self._last_gate,
+                # Process source — pack takes precedence; fall back to single-file md
+                "process_pack_files": self.process_pack_files,
+                "process_md":         self.process_md,
+                "conversation":       self.conversation,
+                "artifacts":          self.artifacts.to_save_dict(),
+                "process_state":      self.state.to_dict(),
+                "last_gate":          self._last_gate,
             }
             tmp_path = save_path + ".tmp"
             with open(tmp_path, "w") as f:
@@ -200,23 +206,31 @@ class PensieveRunner:
         with open(save_path) as f:
             data = json.load(f)
 
+        pack_files  = data.get("process_pack_files")
         process_md  = data.get("process_md", "")
-        process_def = parse_process_md(process_md)
-        artifacts   = ArtifactStore.from_save_dict(data["artifacts"])
-        state       = ProcessRunState.from_save_dict(data["process_state"])
-        config      = data.get("config", {})
+
+        # Restore using process pack files if available, else fall back to single md
+        if pack_files:
+            process_def = parse_process_pack(pack_files)
+        else:
+            process_def = parse_process_md(process_md)
+
+        artifacts = ArtifactStore.from_save_dict(data["artifacts"])
+        state     = ProcessRunState.from_save_dict(data["process_state"])
+        config    = data.get("config", {})
 
         runner = cls(
-            process_def    = process_def,
-            state          = state,
-            artifact_store = artifacts,
-            queue          = queue,
-            model          = config.get("model", "gpt-4o"),
-            api_key        = api_key,
-            api_key_type   = api_key_type_override or config.get("api_key_type", "openai"),
-            azure_endpoint    = config.get("azure_endpoint"),
-            azure_api_version = config.get("azure_api_version"),
-            process_md     = process_md,
+            process_def        = process_def,
+            state              = state,
+            artifact_store     = artifacts,
+            queue              = queue,
+            model              = config.get("model", "gpt-4o"),
+            api_key            = api_key,
+            api_key_type       = api_key_type_override or config.get("api_key_type", "openai"),
+            azure_endpoint     = config.get("azure_endpoint"),
+            azure_api_version  = config.get("azure_api_version"),
+            process_md         = process_md,
+            process_pack_files = pack_files,
         )
         runner.conversation = data.get("conversation", [])
         runner._last_gate   = data.get("last_gate")
@@ -760,11 +774,13 @@ class PensieveRunner:
             "Input data:\n\n" + json.dumps(args, indent=2)
         )
 
-        logger.info(f"[{short}] Inline tool '{idef.name}' starting — model={self._litellm_model()}")
+        # Use tool-level model override if present; fall back to process/session model
+        sub_model = idef.model_override or self.model
+        logger.info(f"[{short}] Inline tool '{idef.name}' starting — model={self._litellm_model(sub_model)}")
         t0 = time.time()
         try:
             response = await litellm.acompletion(
-                model=self._litellm_model(),
+                model=self._litellm_model(sub_model),
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user",   "content": user_msg},

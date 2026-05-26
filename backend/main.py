@@ -1,10 +1,11 @@
 import asyncio
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import List
+from typing import Dict, List
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -20,8 +21,11 @@ from models import (
     PensieveRunInfo, PensieveStartRequest,
 )
 from orchestrator import run_orchestration
-from pensieve.process_parser import parse_process_md, ProcessParseError
+from pensieve.process_parser import parse_process_md, parse_process_pack, ProcessParseError
 from pensieve.runner import PensieveRunner
+
+# Directory where built-in process packs live (backend/process_packs/<pack_id>/)
+_PACKS_DIR = os.path.join(os.path.dirname(__file__), "process_packs")
 
 load_dotenv()
 
@@ -239,11 +243,30 @@ async def delete_chat_session(session_id: str):
 
 @app.post("/api/pensieve/start", response_model=PensieveRunInfo)
 async def pensieve_start(req: PensieveStartRequest):
-    """Parse a process.md, initialise a run, and start the main agent."""
+    """Parse a process definition, initialise a run, and start the main agent.
+
+    Accepts either a single-file ``process_md`` string or a ``process_pack``
+    dict mapping relative paths to file contents.
+    """
+    pack_files: Dict[str, str] | None = None
+    process_md_str: str = ""
+
     try:
-        process_def = parse_process_md(req.process_md)
+        if req.process_pack:
+            # Pack mode — dict of {rel_path: content}
+            pack_files = {k: str(v) for k, v in req.process_pack.items()}
+            process_def = parse_process_pack(pack_files)
+        elif req.process_md:
+            # Single-file backward-compat mode
+            process_md_str = req.process_md
+            process_def = parse_process_md(process_md_str)
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="Either process_md or process_pack must be provided.",
+            )
     except ProcessParseError as exc:
-        raise HTTPException(status_code=422, detail=f"process.md parse error: {exc}")
+        raise HTTPException(status_code=422, detail=f"Process parse error: {exc}")
 
     run_id = str(uuid.uuid4())
     queue: asyncio.Queue = asyncio.Queue()
@@ -258,7 +281,8 @@ async def pensieve_start(req: PensieveStartRequest):
         azure_endpoint=req.azure_endpoint,
         azure_api_version=req.azure_api_version,
         project_brief=req.project_brief,
-        process_md=req.process_md,
+        process_md=process_md_str,
+        process_pack_files=pack_files,
     )
     _PENSIEVE[run_id] = runner
 
@@ -268,7 +292,8 @@ async def pensieve_start(req: PensieveStartRequest):
     logger.info(
         f"[PENSIEVE] run_id={run_id[:8]} process={process_def.process_id} "
         f"steps={len(process_def.steps)} model={req.model or process_def.default_model} "
-        f"api_key_type={req.api_key_type} has_brief={req.project_brief is not None}"
+        f"api_key_type={req.api_key_type} has_brief={req.project_brief is not None} "
+        f"mode={'pack' if pack_files else 'single_file'}"
     )
 
     # Kick off the greeting in the background
@@ -430,3 +455,62 @@ async def pensieve_saved_check(run_id: str):
     """Check whether a save file exists for this run_id (used by the frontend on load)."""
     exists = PensieveRunner.saved_run_exists(run_id)
     return {"run_id": run_id, "exists": exists}
+
+
+# ── Process pack catalogue ─────────────────────────────────────────────────────
+
+def _load_pack_dir(pack_path: str) -> Dict[str, str]:
+    """Walk a process pack directory and return {relative_path → file_content}."""
+    files: Dict[str, str] = {}
+    for root, _, fnames in os.walk(pack_path):
+        for fname in fnames:
+            if fname.endswith(".md"):
+                full_path = os.path.join(root, fname)
+                rel_path  = os.path.relpath(full_path, pack_path).replace("\\", "/")
+                try:
+                    with open(full_path, encoding="utf-8") as f:
+                        files[rel_path] = f.read()
+                except OSError:
+                    pass
+    return files
+
+
+@app.get("/api/pensieve/packs")
+async def list_process_packs():
+    """List available built-in process packs from the backend process_packs directory."""
+    packs = []
+    if not os.path.isdir(_PACKS_DIR):
+        return packs
+    for pack_id in sorted(os.listdir(_PACKS_DIR)):
+        pack_path = os.path.join(_PACKS_DIR, pack_id)
+        if not os.path.isdir(pack_path):
+            continue
+        files = _load_pack_dir(pack_path)
+        if not files:
+            continue
+        try:
+            pd = parse_process_pack(files)
+            packs.append({
+                "id":          pack_id,
+                "label":       pd.label,
+                "description": pd.description,
+                "steps":       len(pd.steps),
+                "phases":      len(pd.phases),
+            })
+        except Exception as exc:
+            logger.warning(f"[PACKS] Could not parse pack '{pack_id}': {exc}")
+            packs.append({"id": pack_id, "label": pack_id, "description": "", "steps": 0, "phases": 0})
+    return packs
+
+
+@app.get("/api/pensieve/packs/{pack_id}")
+async def get_process_pack(pack_id: str):
+    """Return all .md files for a named built-in process pack."""
+    # Sanitise: no path traversal
+    if "/" in pack_id or "\\" in pack_id or pack_id.startswith("."):
+        raise HTTPException(status_code=400, detail="Invalid pack ID.")
+    pack_path = os.path.join(_PACKS_DIR, pack_id)
+    if not os.path.isdir(pack_path):
+        raise HTTPException(status_code=404, detail=f"Pack '{pack_id}' not found.")
+    files = _load_pack_dir(pack_path)
+    return {"pack_id": pack_id, "files": files}

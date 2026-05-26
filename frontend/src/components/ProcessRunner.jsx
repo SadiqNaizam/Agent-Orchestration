@@ -25,7 +25,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Play, Square, Upload, RotateCcw } from 'lucide-react'
+import { Play, Square, Upload, RotateCcw, FolderOpen, Server } from 'lucide-react'
 import PhaseNav from './PhaseNav'
 import ProcessChat from './ProcessChat'
 import TemplateRenderer from './TemplateRenderer'
@@ -44,9 +44,14 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
   const [runId,    setRunId]    = useState(null)
   const [isRunning, setIsRunning] = useState(false)
   const [processMd, setProcessMd] = useState('')
+  // Process pack: {rel_path → content} — set when a folder or backend pack is loaded
+  const [processPack, setProcessPack] = useState(null)
   const [processLabel, setProcessLabel] = useState('Process Runner')
   const [selectedPreset, setSelectedPreset] = useState(0)
   const [savedRunId, setSavedRunId] = useState(null)   // non-null = show resume banner
+  // Backend packs catalogue
+  const [backendPacks, setBackendPacks] = useState([])
+  const [showPackMenu, setShowPackMenu] = useState(false)
 
   // ── Chat state ─────────────────────────────────────────────────────────────
   const [messages,        setMessages]        = useState([])
@@ -70,15 +75,25 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
 
   const esRef      = useRef(null)
   const fileRef    = useRef(null)
+  const folderRef  = useRef(null)
 
   // ── Load default process.md ────────────────────────────────────────────────
   useEffect(() => {
     const path = PRESET_PROCESSES[selectedPreset]?.path || PRESET_PROCESSES[0].path
     fetch(path)
       .then(r => r.ok ? r.text() : '')
-      .then(text => { if (text) setProcessMd(text) })
+      .then(text => { if (text) { setProcessMd(text); setProcessPack(null) } })
       .catch(() => {})
   }, [selectedPreset])
+
+  // ── Fetch backend packs catalogue on mount ─────────────────────────────────
+  useEffect(() => {
+    fetch(`${backendUrl}/api/pensieve/packs`)
+      .then(r => r.ok ? r.json() : [])
+      .then(packs => setBackendPacks(packs))
+      .catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ── Check for a resumable run in localStorage ──────────────────────────────
   useEffect(() => {
@@ -99,8 +114,8 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
   // ── Start a run ────────────────────────────────────────────────────────────
   const handleStart = useCallback(async () => {
     if (isRunning) return                   // guard against double-click race
-    if (!processMd.trim()) {
-      alert('Please load a process.md file first.')
+    if (!processPack && !processMd.trim()) {
+      alert('Please load a process.md file or a process pack first.')
       return
     }
     setIsRunning(true)
@@ -117,17 +132,23 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
     }
 
     try {
+      const body = {
+        project_brief:     projectBrief,
+        api_key:           apiKey || undefined,
+        api_key_type:      apiKeyType,
+        azure_endpoint:    azureEndpoint || undefined,
+        azure_api_version: azureApiVersion,
+      }
+      if (processPack) {
+        body.process_pack = processPack
+      } else {
+        body.process_md = processMd
+      }
+
       const res = await fetch(`${backendUrl}/api/pensieve/start`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          process_md:       processMd,
-          project_brief:    projectBrief,
-          api_key:          apiKey || undefined,
-          api_key_type:     apiKeyType,
-          azure_endpoint:   azureEndpoint || undefined,
-          azure_api_version: azureApiVersion,
-        }),
+        body: JSON.stringify(body),
       })
 
       if (!res.ok) {
@@ -370,15 +391,66 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
     })
   }, [runId, backendUrl])
 
-  // ── File upload for process.md ─────────────────────────────────────────────
+  // ── File upload for single process.md ─────────────────────────────────────
   const handleFileUpload = (e) => {
     const file = e.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = (ev) => setProcessMd(ev.target.result || '')
+    reader.onload = (ev) => {
+      setProcessMd(ev.target.result || '')
+      setProcessPack(null)
+      setProcessLabel(file.name.replace(/\.md$/, ''))
+    }
     reader.readAsText(file)
     e.target.value = ''
   }
+
+  // ── Folder upload for process packs ───────────────────────────────────────
+  const handleFolderUpload = (e) => {
+    const files = Array.from(e.target.files || [])
+    if (!files.length) return
+    const mdFiles = files.filter(f => f.name.endsWith('.md'))
+    if (!mdFiles.length) { alert('No .md files found in the selected folder.'); return }
+
+    const pack = {}
+    let remaining = mdFiles.length
+
+    mdFiles.forEach(file => {
+      // webkitRelativePath gives us "folderName/path/to/file.md"
+      // Strip the top-level folder name so we get the relative path within the pack
+      const parts = (file.webkitRelativePath || file.name).split('/').slice(1)
+      const relPath = parts.join('/')
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        pack[relPath] = ev.target.result || ''
+        remaining -= 1
+        if (remaining === 0) {
+          setProcessPack(pack)
+          setProcessMd('')
+          // Derive a label from the top folder name
+          const topFolder = (file.webkitRelativePath || '').split('/')[0]
+          setProcessLabel(topFolder || 'Process Pack')
+        }
+      }
+      reader.readAsText(file)
+    })
+    e.target.value = ''
+  }
+
+  // ── Load a backend pack by ID ──────────────────────────────────────────────
+  const handleLoadBackendPack = useCallback(async (pack) => {
+    setShowPackMenu(false)
+    try {
+      const res = await fetch(`${backendUrl}/api/pensieve/packs/${pack.id}`)
+      if (!res.ok) throw new Error(res.statusText)
+      const { files } = await res.json()
+      setProcessPack(files)
+      setProcessMd('')
+      setProcessLabel(pack.label || pack.id)
+    } catch (err) {
+      alert(`Failed to load pack "${pack.id}": ${err.message}`)
+    }
+  }, [backendUrl])
 
   // ── Current step label for template header ─────────────────────────────────
   const currentStepLabel = processState
@@ -425,11 +497,11 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* Preset selector */}
+          {/* Preset selector (single-file) */}
           {!isRunning && (
             <select
               value={selectedPreset}
-              onChange={e => setSelectedPreset(Number(e.target.value))}
+              onChange={e => { setSelectedPreset(Number(e.target.value)); setProcessPack(null) }}
               className="text-xs bg-slate-700 border border-slate-600 text-slate-300 rounded px-2 py-1 focus:outline-none focus:border-indigo-500"
             >
               {PRESET_PROCESSES.map((p, i) => (
@@ -437,14 +509,75 @@ export default function ProcessRunner({ apiKey, apiKeyType, azureEndpoint, azure
               ))}
             </select>
           )}
-          <input ref={fileRef} type="file" accept=".md" onChange={handleFileUpload} className="hidden" />
-          <button
-            onClick={() => fileRef.current?.click()}
-            disabled={isRunning}
-            className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors disabled:opacity-30"
-          >
-            <Upload size={12} /> Load custom
-          </button>
+
+          {/* Hidden file inputs */}
+          <input ref={fileRef}   type="file" accept=".md" onChange={handleFileUpload} className="hidden" />
+          <input ref={folderRef} type="file" onChange={handleFolderUpload} className="hidden"
+            // @ts-ignore — webkitdirectory is non-standard but widely supported
+            webkitdirectory="true" directory="true" multiple />
+
+          {!isRunning && (
+            <>
+              {/* Single .md upload */}
+              <button
+                onClick={() => fileRef.current?.click()}
+                title="Load a single process.md file"
+                className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors"
+              >
+                <Upload size={12} /> .md
+              </button>
+
+              {/* Folder (pack) upload */}
+              <button
+                onClick={() => folderRef.current?.click()}
+                title="Load a process pack folder"
+                className={`flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors
+                  ${processPack
+                    ? 'text-indigo-400 bg-indigo-900/40 border border-indigo-700/50'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-700'}`}
+              >
+                <FolderOpen size={12} /> Pack
+              </button>
+
+              {/* Backend packs dropdown */}
+              {backendPacks.length > 0 && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowPackMenu(v => !v)}
+                    title="Load a built-in server-side process pack"
+                    className="flex items-center gap-1 px-2 py-1 rounded text-xs text-slate-400 hover:text-slate-200 hover:bg-slate-700 transition-colors"
+                  >
+                    <Server size={12} /> Packs
+                  </button>
+                  {showPackMenu && (
+                    <div className="absolute right-0 top-full mt-1 z-50 min-w-[200px] bg-slate-800 border border-slate-600 rounded shadow-xl py-1">
+                      {backendPacks.map(pack => (
+                        <button
+                          key={pack.id}
+                          onClick={() => handleLoadBackendPack(pack)}
+                          className="w-full text-left px-3 py-2 text-xs text-slate-300 hover:bg-slate-700 transition-colors"
+                        >
+                          <div className="font-medium">{pack.label}</div>
+                          {pack.description && (
+                            <div className="text-slate-500 mt-0.5 leading-tight">{pack.description}</div>
+                          )}
+                          <div className="text-slate-600 mt-0.5">{pack.steps} steps · {pack.phases} phases</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Process pack indicator */}
+          {processPack && !isRunning && (
+            <span className="text-xs text-indigo-400 font-mono bg-indigo-900/30 border border-indigo-700/40 px-2 py-0.5 rounded">
+              pack ({Object.keys(processPack).length} files)
+            </span>
+          )}
+
           <button
             onClick={isRunning ? handleStop : handleStart}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-semibold transition-all

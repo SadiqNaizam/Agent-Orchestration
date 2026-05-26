@@ -202,8 +202,16 @@ class ChatSessionInfo(BaseModel):
 # ── Pensieve (Process-Driven Orchestration) ────────────────────────────────────
 
 class PensieveStartRequest(BaseModel):
-    """Start a new process run from a process.md definition."""
-    process_md: str                        # full text of the process.md file
+    """
+    Start a new process run.
+
+    Supply exactly one of:
+      - process_md   — full text of a single-file process.md / agent.md
+      - process_pack — dict mapping relative paths to file contents, e.g.
+                       {"agent.md": "...", "tools/analyze_problem.md": "..."}
+    """
+    process_md: Optional[str] = None       # single-file mode (backward compat)
+    process_pack: Optional[Dict[str, Any]] = None  # pack mode: {rel_path → content}
     project_brief: Optional[Dict[str, Any]] = None
     model: Optional[str] = None            # overrides process default_model
     api_key: Optional[str] = None
