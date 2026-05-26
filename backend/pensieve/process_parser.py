@@ -3,8 +3,8 @@ Process parser — converts a process definition into structured Python objects.
 
 Supports two formats:
 
-1. Single file (process.md / agent.md)
-   ─────────────────────────────────
+1. Single file (process.md)
+   ─────────────────────────
    The classic format: one self-contained markdown file with frontmatter,
    state schema, phases/steps, an optional ## Tools section, and global rules.
 
@@ -13,12 +13,14 @@ Supports two formats:
    A directory with separated concerns:
 
      my-pack/
-     ├── agent.md          ← phases, steps, state schema, global rules
+     ├── process.md        ← phases, steps, state schema, global rules
      ├── tools/
      │   ├── analyze_problem.md   ← one tool per file
      │   └── plan_gtm.md
      └── skills/
          └── vc_analyst.md        ← reusable persona/expertise snippets
+
+   The main file must be named process.md (agent.md also accepted for compat).
 
    Tool files: YAML frontmatter (name, description, output_key, model, skills)
                + body = system prompt text.
@@ -26,8 +28,8 @@ Supports two formats:
    Skill files: YAML frontmatter (name) + body = expertise text that gets
                 prepended to any tool that lists it in `skills: [...]`.
 
-   Tool files take precedence over an inline ## Tools section in agent.md.
-   Both can coexist — agent.md ## Tools fills gaps not covered by tool files.
+   Tool files take precedence over an inline ## Tools section in process.md.
+   Both can coexist — process.md ## Tools fills gaps not covered by tool files.
 
 Public API
 ──────────
@@ -176,10 +178,10 @@ def parse_process_pack(files: Dict[str, str]) -> ProcessDefinition:
     (both are merged; file tools win on name conflict).
     """
     # ── Find main orchestration file ───────────────────────────────────────────
-    # Accept agent.md, process.md, or any root-level *.md as fallback
+    # Accept process.md (preferred), agent.md, or any root-level *.md as fallback
     main_content = (
-        files.get("agent.md") or
         files.get("process.md") or
+        files.get("agent.md") or
         next(
             (v for k, v in sorted(files.items())
              if "/" not in k and k.endswith(".md")),
@@ -188,7 +190,7 @@ def parse_process_pack(files: Dict[str, str]) -> ProcessDefinition:
     )
     if not main_content:
         raise ProcessParseError(
-            "Process pack must contain agent.md (or process.md) at the root level."
+            "Process pack must contain process.md (or agent.md) at the root level."
         )
 
     # ── Parse skills ───────────────────────────────────────────────────────────
