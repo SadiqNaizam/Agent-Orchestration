@@ -628,6 +628,15 @@ class PensieveRunner:
         step_instr      = self.process_def.step_instructions.get(current_step_id, StepInstructions())
         step_meta       = self.process_def.steps_by_id.get(current_step_id) if current_step_id else None
 
+        # Auto-inject any consumed artifacts the LLM forgot to pass as parameters.
+        if step_meta:
+            for key in step_meta.consumes:
+                if key not in args:
+                    artifact_data = self.artifacts.read(key)
+                    if artifact_data is not None:
+                        args[key] = artifact_data
+                        logger.info(f"[{short}] Auto-injected consumed artifact '{key}' into {tool_name} args")
+
 
         sub_system = tool_entry.system_prompt
         if step_instr.context_for_sub_agent:
@@ -750,6 +759,16 @@ class PensieveRunner:
         current_step_id = self.state.current_step or ""
         step_meta      = self.process_def.steps_by_id.get(current_step_id) if current_step_id else None
         step_instr     = self.process_def.step_instructions.get(current_step_id, StepInstructions())
+
+        # Auto-inject any consumed artifacts the LLM forgot to pass as parameters.
+        # This makes tool invocation resilient even when the main agent omits them.
+        if step_meta:
+            for key in step_meta.consumes:
+                if key not in args:
+                    artifact_data = self.artifacts.read(key)
+                    if artifact_data is not None:
+                        args[key] = artifact_data
+                        logger.info(f"[{short}] Auto-injected consumed artifact '{key}' into {idef.name} args")
 
         # Build the sub-agent system prompt: inline base + step-level overrides
         system_prompt = idef.system_prompt
